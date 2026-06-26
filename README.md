@@ -1,6 +1,6 @@
 # OpenWiki
 
-![OpenWiki](/static/openwiki.png)
+![OpenWiki](https://raw.githubusercontent.com/langchain-ai/openwiki/main/static/openwiki.png)
 
 OpenWiki is a CLI that writes and maintains agent documentation for your codebase.
 
