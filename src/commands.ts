@@ -188,11 +188,11 @@ export const helpContent: HelpContent = {
   options: [
     {
       label: "--init",
-      description: "Generate initial OpenWiki documentation.",
+      description: "Run once to generate initial OpenWiki documentation.",
     },
     {
       label: "--update",
-      description: "Update existing OpenWiki documentation.",
+      description: "Run once to update existing OpenWiki documentation.",
     },
     {
       label: "-p, --print",

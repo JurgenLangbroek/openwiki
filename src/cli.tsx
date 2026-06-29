@@ -2732,10 +2732,10 @@ if (parsedCommand.kind === "run" && !parsedCommand.dryRun) {
 
 const command = resolveStartupCommand(parsedCommand);
 
-if (argvRequestsPrint(argv) && command.kind === "error") {
+if (argvRequestsOneShot(argv) && command.kind === "error") {
   process.stderr.write(`${command.message}\n`);
   process.exitCode = command.exitCode;
-} else if (command.kind === "run" && command.print && !command.dryRun) {
+} else if (shouldRunOnce(command)) {
   await runPrintCommand(command);
 } else {
   render(<App command={command} />);
@@ -2745,11 +2745,32 @@ function argvRequestsPrint(argv: string[]): boolean {
   return argv.some((arg) => arg === "-p" || arg === "--print");
 }
 
+function argvRequestsOneShot(argv: string[]): boolean {
+  return argvRequestsPrint(argv) || argv.some(isOneShotArg);
+}
+
+function isOneShotArg(arg: string): boolean {
+  return arg === "--init" || arg === "--update";
+}
+
+function shouldRunOnce(
+  command: CliCommand,
+): command is Extract<CliCommand, { kind: "run" }> {
+  return (
+    command.kind === "run" &&
+    !command.dryRun &&
+    (command.print ||
+      command.command === "init" ||
+      command.command === "update")
+  );
+}
+
 async function runPrintCommand(
   command: Extract<CliCommand, { kind: "run" }>,
 ): Promise<void> {
   try {
-    const output: string[] = [];
+    let log: RunLogItem[] = [];
+    let nextLogId = 1;
 
     await runOpenWikiAgent(command.command, process.cwd(), {
       debug: isDebugMode(),
@@ -2758,13 +2779,12 @@ async function runPrintCommand(
       threadId: createOpenWikiThreadId(process.cwd()),
       userMessage: command.userMessage,
       onEvent: (event) => {
-        if (event.type === "text" && event.source !== "subgraph") {
-          output.push(event.text);
-        }
+        log = appendRunLogEvent(log, event, { current: nextLogId });
+        nextLogId = Math.max(nextLogId, getNextLogId(log));
       },
     });
 
-    const text = output.join("").trim();
+    const text = getFinalModelMessage(log);
 
     if (text.length > 0) {
       process.stdout.write(`${text}\n`);
@@ -2776,6 +2796,24 @@ async function runPrintCommand(
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
   }
+}
+
+function getFinalModelMessage(log: RunLogItem[]): string {
+  for (let index = log.length - 1; index >= 0; index -= 1) {
+    const item = log[index];
+
+    if (item.type === "text") {
+      return item.content.trim();
+    }
+  }
+
+  return "";
+}
+
+function getNextLogId(log: RunLogItem[]): number {
+  const lastItem = log.at(-1);
+
+  return lastItem ? lastItem.id + 1 : 1;
 }
 
 function writePrintErrorDiagnostics(error: unknown): void {
@@ -2797,7 +2835,10 @@ function resolveStartupCommand(command: CliCommand): CliCommand {
     command.kind === "run" &&
     !command.dryRun &&
     command.shouldStart &&
-    (command.print || !process.stdin.isTTY)
+    (command.print ||
+      command.command === "init" ||
+      command.command === "update" ||
+      !process.stdin.isTTY)
   ) {
     const hasOpenRouterKey = Boolean(process.env[OPENROUTER_API_KEY_ENV_KEY]);
 
