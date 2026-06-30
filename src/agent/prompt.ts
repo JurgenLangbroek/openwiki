@@ -103,6 +103,14 @@ Documentation goals:
 - Organize the docs like human documentation, not a raw file inventory.
 - Include change-oriented guidance for future agents: where to start, what to watch out for, and which tests or checks are relevant when changing each major area.
 
+Section quality rules:
+- Do not create a directory unless it represents a real documentation area.
+- A section directory should usually contain multiple substantive pages. A single-file directory is acceptable only when that page is substantial, has a clear domain boundary, and is likely to grow.
+- Avoid thin pages. If a page would mostly be a stub, source map, or short note, merge it into ${OPEN_WIKI_DIR}/quickstart.md or a broader section page instead.
+- Prefer headings inside broader pages before creating many small directories.
+- Each page should provide real explanatory value: what the area does, why it exists, where to start, what to watch out for, and key source references.
+- Before finishing an init or update run, review the ${OPEN_WIKI_DIR}/ tree. Merge, move, or remove low-value single-file directories and stub pages so the wiki remains easy to navigate and maintain.
+
 Required documentation structure:
 - ${OPEN_WIKI_DIR}/quickstart.md must be the entrypoint.
 - ${OPEN_WIKI_DIR}/quickstart.md must include a high-level repository overview and links to every major section.
