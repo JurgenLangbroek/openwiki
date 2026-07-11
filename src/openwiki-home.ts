@@ -2,13 +2,27 @@ import { chmod, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-export const openWikiHomeDir = path.join(os.homedir(), ".openwiki");
-export const openWikiConnectorsDir = path.join(openWikiHomeDir, "connectors");
-export const openWikiLocalWikiDir = path.join(openWikiHomeDir, "wiki");
-export const openWikiSkillsDir = path.join(openWikiHomeDir, "skills");
+export function getOpenWikiHomeDir(): string {
+  const override = process.env.OPENWIKI_HOME?.trim();
+  return override
+    ? path.resolve(override)
+    : path.join(os.homedir(), ".openwiki");
+}
+
+export function getOpenWikiConnectorsDir(): string {
+  return path.join(getOpenWikiHomeDir(), "connectors");
+}
+
+export function getOpenWikiLocalWikiDir(): string {
+  return path.join(getOpenWikiHomeDir(), "wiki");
+}
+
+export function getOpenWikiSkillsDir(): string {
+  return path.join(getOpenWikiHomeDir(), "skills");
+}
 
 export function getConnectorDir(connectorId: string): string {
-  return path.join(openWikiConnectorsDir, connectorId);
+  return path.join(getOpenWikiConnectorsDir(), connectorId);
 }
 
 export function getConnectorConfigPath(connectorId: string): string {
@@ -28,11 +42,12 @@ export function getConnectorLogsDir(connectorId: string): string {
 }
 
 export async function ensureOpenWikiHome(): Promise<void> {
-  await mkdir(openWikiHomeDir, { recursive: true, mode: 0o700 });
-  await chmodIfExists(openWikiHomeDir, 0o700);
-  await mkdir(openWikiConnectorsDir, { recursive: true, mode: 0o700 });
-  await mkdir(openWikiLocalWikiDir, { recursive: true, mode: 0o700 });
-  await mkdir(openWikiSkillsDir, { recursive: true, mode: 0o700 });
+  const homeDir = getOpenWikiHomeDir();
+  await mkdir(homeDir, { recursive: true, mode: 0o700 });
+  await chmodIfExists(homeDir, 0o700);
+  await mkdir(getOpenWikiConnectorsDir(), { recursive: true, mode: 0o700 });
+  await mkdir(getOpenWikiLocalWikiDir(), { recursive: true, mode: 0o700 });
+  await mkdir(getOpenWikiSkillsDir(), { recursive: true, mode: 0o700 });
 }
 
 export async function ensureConnectorHome(connectorId: string): Promise<void> {

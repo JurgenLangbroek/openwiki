@@ -1,5 +1,4 @@
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import {
   ANTHROPIC_API_KEY_ENV_KEY,
@@ -43,9 +42,15 @@ import {
   resolveProviderRetryAttempts,
 } from "./constants.js";
 import { isFileNotFoundError } from "./fs-errors.js";
+import { getOpenWikiHomeDir } from "./openwiki-home.js";
 
-export const openWikiEnvDir = path.join(os.homedir(), ".openwiki");
-export const openWikiEnvPath = path.join(openWikiEnvDir, ".env");
+export function getOpenWikiEnvDir(): string {
+  return getOpenWikiHomeDir();
+}
+
+export function getOpenWikiEnvPath(): string {
+  return path.join(getOpenWikiEnvDir(), ".env");
+}
 
 type EnvMap = Record<string, string>;
 
@@ -189,17 +194,19 @@ export async function saveOpenWikiEnv(updates: EnvMap): Promise<void> {
     delete nextEnv[key];
   }
 
-  await mkdir(openWikiEnvDir, {
+  const envDir = getOpenWikiEnvDir();
+  const envPath = getOpenWikiEnvPath();
+  await mkdir(envDir, {
     recursive: true,
     mode: 0o700,
   });
-  await chmod(openWikiEnvDir, 0o700);
+  await chmod(envDir, 0o700);
 
-  await writeFile(openWikiEnvPath, formatEnv(nextEnv), {
+  await writeFile(envPath, formatEnv(nextEnv), {
     encoding: "utf8",
     mode: 0o600,
   });
-  await chmod(openWikiEnvPath, 0o600);
+  await chmod(envPath, 0o600);
 
   for (const [key, value] of Object.entries(updates)) {
     process.env[key] = value;
@@ -324,7 +331,7 @@ function getRetryAttemptsWarnings(value: string): string[] {
 
 async function readOpenWikiEnv(): Promise<EnvMap> {
   try {
-    return parseEnv(await readFile(openWikiEnvPath, "utf8"));
+    return parseEnv(await readFile(getOpenWikiEnvPath(), "utf8"));
   } catch (error) {
     if (isFileNotFoundError(error)) {
       return {};

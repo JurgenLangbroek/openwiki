@@ -2,17 +2,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { OPEN_WIKI_DIR } from "./constants.js";
-import { ensureOpenWikiHome, openWikiHomeDir } from "./openwiki-home.js";
+import { ensureOpenWikiHome, getOpenWikiHomeDir } from "./openwiki-home.js";
 import type { ConnectorId } from "./connectors/types.js";
 
-export const openWikiOnboardingPath = path.join(
-  openWikiHomeDir,
-  "onboarding.json",
-);
-export const openWikiInstructionsPath = path.join(
-  openWikiHomeDir,
-  "INSTRUCTIONS.md",
-);
+export function getOpenWikiOnboardingPath(): string {
+  return path.join(getOpenWikiHomeDir(), "onboarding.json");
+}
+
+export function getOpenWikiInstructionsPath(): string {
+  return path.join(getOpenWikiHomeDir(), "INSTRUCTIONS.md");
+}
 export const REPOSITORY_INSTRUCTIONS_FILE = "INSTRUCTIONS.md";
 
 export type OnboardingSourceScheduleConfig = {
@@ -75,7 +74,7 @@ export async function readOpenWikiOnboardingConfig(): Promise<OpenWikiOnboarding
 
   try {
     const config = normalizeOnboardingConfig(
-      JSON.parse(await readFile(openWikiOnboardingPath, "utf8")),
+      JSON.parse(await readFile(getOpenWikiOnboardingPath(), "utf8")),
     );
 
     return {
@@ -101,22 +100,20 @@ export async function saveOpenWikiOnboardingConfig(
   const normalizedConfig = normalizeOnboardingConfig(config);
   const { wikiGoal, ...jsonConfig } = normalizedConfig;
 
-  await writeFile(
-    openWikiOnboardingPath,
-    `${JSON.stringify(jsonConfig, null, 2)}\n`,
-    {
-      encoding: "utf8",
-      mode: 0o600,
-    },
-  );
-  await chmod(openWikiOnboardingPath, 0o600);
+  const onboardingPath = getOpenWikiOnboardingPath();
+  await writeFile(onboardingPath, `${JSON.stringify(jsonConfig, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await chmod(onboardingPath, 0o600);
 
   if (wikiGoal?.trim()) {
-    await writeFile(openWikiInstructionsPath, `${wikiGoal.trim()}\n`, {
+    const instructionsPath = getOpenWikiInstructionsPath();
+    await writeFile(instructionsPath, `${wikiGoal.trim()}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
-    await chmod(openWikiInstructionsPath, 0o600);
+    await chmod(instructionsPath, 0o600);
   }
 }
 
@@ -177,13 +174,13 @@ export function isOnboardingComplete(
 }
 
 export function isOpenWikiOnboardingCompleteSync(): boolean {
-  if (!existsSync(openWikiOnboardingPath)) {
+  if (!existsSync(getOpenWikiOnboardingPath())) {
     return false;
   }
 
   try {
     const config = normalizeOnboardingConfig(
-      JSON.parse(readFileSync(openWikiOnboardingPath, "utf8")),
+      JSON.parse(readFileSync(getOpenWikiOnboardingPath(), "utf8")),
     );
     const wikiGoal = readWikiInstructionsSync();
 
@@ -196,13 +193,13 @@ export function isOpenWikiOnboardingCompleteSync(): boolean {
 export function isRepositoryCodeOnboardingCompleteSync(
   repoRoot: string,
 ): boolean {
-  if (!existsSync(openWikiOnboardingPath)) {
+  if (!existsSync(getOpenWikiOnboardingPath())) {
     return false;
   }
 
   try {
     const config = normalizeOnboardingConfig(
-      JSON.parse(readFileSync(openWikiOnboardingPath, "utf8")),
+      JSON.parse(readFileSync(getOpenWikiOnboardingPath(), "utf8")),
     );
     if (!isCodeModeConfig(config)) {
       return false;
@@ -221,7 +218,9 @@ export function isRepositoryCodeOnboardingCompleteSync(
 
 async function readWikiInstructions(): Promise<string | undefined> {
   try {
-    const content = (await readFile(openWikiInstructionsPath, "utf8")).trim();
+    const content = (
+      await readFile(getOpenWikiInstructionsPath(), "utf8")
+    ).trim();
     return content.length > 0 ? content : undefined;
   } catch (error) {
     if (isFileNotFoundError(error)) {
@@ -233,11 +232,11 @@ async function readWikiInstructions(): Promise<string | undefined> {
 }
 
 function readWikiInstructionsSync(): string | undefined {
-  if (!existsSync(openWikiInstructionsPath)) {
+  if (!existsSync(getOpenWikiInstructionsPath())) {
     return undefined;
   }
 
-  const content = readFileSync(openWikiInstructionsPath, "utf8").trim();
+  const content = readFileSync(getOpenWikiInstructionsPath(), "utf8").trim();
   return content.length > 0 ? content : undefined;
 }
 

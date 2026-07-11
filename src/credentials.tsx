@@ -44,13 +44,13 @@ import type { AuthProviderId } from "./auth/types.js";
 import type { OpenWikiRunMode } from "./commands.js";
 import type { ConnectorId } from "./connectors/types.js";
 import { getConnectorConfigPath } from "./openwiki-home.js";
-import { openWikiEnvPath, saveOpenWikiEnv } from "./env.js";
+import { getOpenWikiEnvPath, saveOpenWikiEnv } from "./env.js";
 import {
   createEmptyOnboardingConfig,
   isOpenWikiOnboardingCompleteSync,
   isOnboardingComplete,
   isRepositoryCodeOnboardingCompleteSync,
-  openWikiOnboardingPath,
+  getOpenWikiOnboardingPath,
   readOpenWikiOnboardingConfig,
   readRepositoryWikiInstructions,
   saveRepositoryWikiInstructions,
@@ -435,7 +435,7 @@ function getCredentialSetupDetail(
 
   return isCredentialConfigured(provider)
     ? "available from environment"
-    : `save ${getProviderApiKeyEnvKey(provider)} to ${openWikiEnvPath}`;
+    : `save ${getProviderApiKeyEnvKey(provider)} to ${getOpenWikiEnvPath()}`;
 }
 
 /**
@@ -1978,7 +1978,7 @@ export function InitSetup({
             detail={
               isBaseUrlConfigured(provider)
                 ? "available from environment"
-                : `save ${getProviderBaseUrlEnvKey(provider)} to ${openWikiEnvPath}`
+                : `save ${getProviderBaseUrlEnvKey(provider)} to ${getOpenWikiEnvPath()}`
             }
           />
         ) : null}
@@ -2048,7 +2048,7 @@ export function InitSetup({
               ? "repository openwiki/"
               : onboardingConfig.wikiGoal
                 ? "saved"
-                : `save onboarding profile to ${openWikiOnboardingPath}`
+                : `save onboarding profile to ${getOpenWikiOnboardingPath()}`
           }
         />
         {selectedMode === "personal" ? (

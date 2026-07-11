@@ -47,7 +47,7 @@ import {
   readOpenWikiOnboardingConfig,
   saveOpenWikiOnboardingConfig,
 } from "./onboarding.js";
-import { openWikiLocalWikiDir } from "./openwiki-home.js";
+import { getOpenWikiLocalWikiDir } from "./openwiki-home.js";
 import {
   deleteConnectorSchedules,
   getSavedPowerScheduleStatus,
@@ -3812,7 +3812,7 @@ function getRunModeCwd(
   mode: OpenWikiRunMode,
   codeRuntimeCwd = process.cwd(),
 ): string {
-  return mode === "code" ? codeRuntimeCwd : openWikiLocalWikiDir;
+  return mode === "code" ? codeRuntimeCwd : getOpenWikiLocalWikiDir();
 }
 
 function getRunModeOutputMode(mode: OpenWikiRunMode): OpenWikiOutputMode {

@@ -11,12 +11,12 @@ import { createOpenWikiConnectorTools } from "../connectors/tools.js";
 import { ensureWriteConnectorSkill } from "../connectors/write-connector-skill.js";
 import {
   DEBUG_ENV_KEYS,
+  getOpenWikiEnvDir,
   loadOpenWikiEnv,
-  openWikiEnvDir,
   saveOpenWikiEnv,
 } from "../env.js";
 import { isFileNotFoundError } from "../fs-errors.js";
-import { openWikiLocalWikiDir } from "../openwiki-home.js";
+import { getOpenWikiLocalWikiDir } from "../openwiki-home.js";
 import { OpenWikiLocalShellBackend } from "./docs-only-backend.js";
 import {
   CODEX_ORIGINATOR,
@@ -65,10 +65,10 @@ import {
 
 export async function runOpenWikiAgent(
   command: OpenWikiCommand,
-  cwd = openWikiLocalWikiDir,
+  cwd = getOpenWikiLocalWikiDir(),
   options: OpenWikiRunOptions = {},
 ): Promise<OpenWikiRunResult> {
-  const runtimeCwd = options.outputMode ? cwd : openWikiLocalWikiDir;
+  const runtimeCwd = options.outputMode ? cwd : getOpenWikiLocalWikiDir();
 
   emitDebug(options, `command=${command}`);
   emitDebug(options, `cwd=${runtimeCwd}`);
@@ -254,7 +254,9 @@ async function runOpenWikiAgentCore(
   };
 }
 
-const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
+function getCheckpointPath(): string {
+  return path.join(getOpenWikiEnvDir(), "openwiki.sqlite");
+}
 
 export type CheckpointTarget = {
   connString: string;
@@ -326,7 +328,7 @@ export function resolveCheckpointTarget(
 ): CheckpointTarget {
   if (command === "chat") {
     return {
-      connString: checkpointPath,
+      connString: getCheckpointPath(),
       persistent: true,
     };
   }
