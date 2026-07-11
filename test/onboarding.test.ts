@@ -52,10 +52,10 @@ describe("OpenWiki onboarding instructions", () => {
     });
 
     const json = JSON.parse(
-      await readFile(onboarding.openWikiOnboardingPath, "utf8"),
+      await readFile(onboarding.getOpenWikiOnboardingPath(), "utf8"),
     ) as Record<string, unknown>;
     const instructions = await readFile(
-      onboarding.openWikiInstructionsPath,
+      onboarding.getOpenWikiInstructionsPath(),
       "utf8",
     );
 
@@ -76,7 +76,7 @@ describe("OpenWiki onboarding instructions", () => {
       wikiGoal: "Markdown instructions win.",
     });
     await writeFile(
-      onboarding.openWikiOnboardingPath,
+      onboarding.getOpenWikiOnboardingPath(),
       `${JSON.stringify({
         sourceInstances: [],
         sources: {},
@@ -92,7 +92,7 @@ describe("OpenWiki onboarding instructions", () => {
       wikiGoal: "Markdown instructions win.",
     });
 
-    await rm(onboarding.openWikiInstructionsPath);
+    await rm(onboarding.getOpenWikiInstructionsPath());
 
     const config = await onboarding.readOpenWikiOnboardingConfig();
     expect(config.wikiGoal).toBeUndefined();

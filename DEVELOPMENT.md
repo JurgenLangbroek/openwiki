@@ -65,6 +65,8 @@ Real runs can write:
 - `openwiki/`
 - `~/.openwiki/.env` for local OpenRouter model/key settings and optional LangSmith credentials
 
+Set `OPENWIKI_HOME` to relocate the entire `~/.openwiki` home tree (wiki, connectors, skills, `.env`) — useful for tests and tooling that need an isolated temporary home. Unset, behaviour is unchanged.
+
 Scheduled update workflow example:
 
 - `examples/openwiki-update.yml`

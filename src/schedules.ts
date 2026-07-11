@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { CronExpressionParser } from "cron-parser";
 import cronstrue from "cronstrue";
-import { ensureOpenWikiHome, openWikiHomeDir } from "./openwiki-home.js";
+import { ensureOpenWikiHome, getOpenWikiHomeDir } from "./openwiki-home.js";
 import type { ConnectorId } from "./connectors/types.js";
 import type { OpenWikiOnboardingConfig } from "./onboarding.js";
 
@@ -161,7 +161,7 @@ export async function installConnectorSchedule({
   void connectorId;
   const label = getLaunchAgentLabel();
   const launchAgentsDir = getLaunchAgentsDir();
-  const logsDir = path.join(openWikiHomeDir, "logs");
+  const logsDir = path.join(getOpenWikiHomeDir(), "logs");
   const plistPath = getLaunchAgentPath();
 
   await ensureOpenWikiHome();

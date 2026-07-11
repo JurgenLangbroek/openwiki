@@ -8,8 +8,8 @@ import path from "node:path";
 import {
   getConnectorConfigPath,
   getConnectorRawDir,
-  openWikiHomeDir,
-  openWikiLocalWikiDir,
+  getOpenWikiHomeDir,
+  getOpenWikiLocalWikiDir,
   resolveConnectorRawPath,
 } from "../openwiki-home.js";
 import { createConnectorRegistry, isConnectorId } from "./registry.js";
@@ -232,8 +232,8 @@ async function listConnectors() {
 
   return {
     note: "Secret values are never returned. requiredEnvStatus reports presence only.",
-    homeDir: openWikiHomeDir,
-    wikiDir: openWikiLocalWikiDir,
+    homeDir: getOpenWikiHomeDir(),
+    wikiDir: getOpenWikiLocalWikiDir(),
     connectors,
   };
 }

@@ -1,17 +1,17 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ensureOpenWikiHome, openWikiSkillsDir } from "../openwiki-home.js";
+import { ensureOpenWikiHome, getOpenWikiSkillsDir } from "../openwiki-home.js";
 
-export const writeConnectorSkillPath = path.join(
-  openWikiSkillsDir,
-  "write-connector.md",
-);
+export function getWriteConnectorSkillPath(): string {
+  return path.join(getOpenWikiSkillsDir(), "write-connector.md");
+}
 
 export async function ensureWriteConnectorSkill(): Promise<void> {
   await ensureOpenWikiHome();
+  const skillPath = getWriteConnectorSkillPath();
 
   try {
-    await readFile(writeConnectorSkillPath, "utf8");
+    await readFile(skillPath, "utf8");
     return;
   } catch (error) {
     if (!isFileNotFoundError(error)) {
@@ -19,14 +19,10 @@ export async function ensureWriteConnectorSkill(): Promise<void> {
     }
   }
 
-  await writeFile(
-    writeConnectorSkillPath,
-    `${WRITE_CONNECTOR_SKILL.trim()}\n`,
-    {
-      encoding: "utf8",
-      mode: 0o600,
-    },
-  );
+  await writeFile(skillPath, `${WRITE_CONNECTOR_SKILL.trim()}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 const WRITE_CONNECTOR_SKILL = `

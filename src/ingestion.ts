@@ -16,7 +16,7 @@ import {
 import {
   ensureOpenWikiHome,
   getConnectorConfigPath,
-  openWikiLocalWikiDir,
+  getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
 import { createOpenWikiThreadId, runOpenWikiAgent } from "./agent/index.js";
 import type {
@@ -87,7 +87,7 @@ export async function runOpenWikiIngestion(
       await runSourceIngestion({
         config,
         connector,
-        cwd: openWikiLocalWikiDir,
+        cwd: getOpenWikiLocalWikiDir(),
         emit: options.onEvent,
         modelId: options.modelId,
         sourceConfig,
