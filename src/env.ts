@@ -7,6 +7,7 @@ import {
   FIREWORKS_API_KEY_ENV_KEY,
   isValidModelId,
   normalizeProvider,
+  NVIDIA_API_KEY_ENV_KEY,
   OPENAI_API_KEY_ENV_KEY,
   OPENAI_CHATGPT_ACCESS_TOKEN_ENV_KEY,
   OPENAI_CHATGPT_ACCOUNT_ID_ENV_KEY,
@@ -77,6 +78,7 @@ export type CredentialDiagnostic = {
 export const MANAGED_ENV_KEYS = [
   BASETEN_API_KEY_ENV_KEY,
   FIREWORKS_API_KEY_ENV_KEY,
+  NVIDIA_API_KEY_ENV_KEY,
   OPENAI_API_KEY_ENV_KEY,
   OPENAI_CHATGPT_ACCESS_TOKEN_ENV_KEY,
   OPENAI_CHATGPT_REFRESH_TOKEN_ENV_KEY,
@@ -375,6 +377,7 @@ function parseEnvValue(value: string): string {
     return value
       .slice(1, -1)
       .replace(/\\n/gu, "\n")
+      .replace(/\\r/gu, "\r")
       .replace(/\\"/gu, '"')
       .replace(/\\\\/gu, "\\");
   }
@@ -397,5 +400,6 @@ function formatEnvValue(value: string): string {
   return `"${value
     .replace(/\\/gu, "\\\\")
     .replace(/"/gu, '\\"')
-    .replace(/\n/gu, "\\n")}"`;
+    .replace(/\n/gu, "\\n")
+    .replace(/\r/gu, "\\r")}"`;
 }
