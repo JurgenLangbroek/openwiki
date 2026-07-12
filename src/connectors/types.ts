@@ -46,6 +46,7 @@ export type ConnectorState = {
   lastRunAt?: string;
   latestIds?: Record<string, string>;
   runs?: ConnectorRunSummary[];
+  seenIds?: Record<string, string[]>;
   version: 1;
 };
 
