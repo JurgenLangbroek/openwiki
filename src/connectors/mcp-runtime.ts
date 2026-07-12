@@ -11,16 +11,16 @@ import {
   listMcpTools,
   type McpToolDescriptor,
 } from "./mcp-client.js";
+import { sanitizeMcpTransport } from "./mcp-shared.js";
+import { createConnectorRegistry, type ConnectorRegistry } from "./registry.js";
 import type {
   ConnectorId,
   ConnectorIngestResult,
   McpConnectorConfig,
 } from "./types.js";
 
-export type McpConnectorId = Extract<ConnectorId, "notion">;
-
 export type McpToolDiscoveryResult = {
-  connectorId: McpConnectorId;
+  connectorId: ConnectorId;
   rawFile: string;
   runId: string;
   tools: McpToolDescriptor[];
@@ -28,23 +28,33 @@ export type McpToolDiscoveryResult = {
 
 export type McpToolCallResult = {
   allowedBy: string;
-  connectorId: McpConnectorId;
+  connectorId: ConnectorId;
   rawFile: string;
   result: unknown;
   runId: string;
   toolName: string;
 };
 
-const MCP_CONNECTOR_IDS = new Set<ConnectorId>(["notion"]);
+export function getMcpConnectorIds(
+  registry: ConnectorRegistry = createConnectorRegistry(),
+): ConnectorId[] {
+  return Object.values(registry)
+    .filter(
+      (connector) =>
+        connector.backend === "mcp-http" || connector.backend === "mcp-stdio",
+    )
+    .map((connector) => connector.id);
+}
 
 export function isMcpConnectorId(
   connectorId: ConnectorId,
-): connectorId is McpConnectorId {
-  return MCP_CONNECTOR_IDS.has(connectorId);
+  registry: ConnectorRegistry = createConnectorRegistry(),
+): boolean {
+  return getMcpConnectorIds(registry).includes(connectorId);
 }
 
 export async function discoverMcpConnectorTools(
-  connectorId: McpConnectorId,
+  connectorId: ConnectorId,
 ): Promise<McpToolDiscoveryResult> {
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
@@ -74,7 +84,7 @@ export async function discoverMcpConnectorTools(
 }
 
 export async function callMcpConnectorTool(
-  connectorId: McpConnectorId,
+  connectorId: ConnectorId,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<McpToolCallResult> {
@@ -90,7 +100,7 @@ export async function callMcpConnectorTool(
     );
   }
 
-  const policy = getToolCallPolicy(connectorId, config, tool);
+  const policy = getToolCallPolicy(config, tool);
   if (!policy.allowed) {
     throw new Error(policy.reason);
   }
@@ -128,32 +138,8 @@ export async function callMcpConnectorTool(
   };
 }
 
-export function sanitizeMcpTransport(
-  transport: McpConnectorConfig["transport"],
-): McpConnectorConfig["transport"] | null {
-  if (!transport) {
-    return null;
-  }
-
-  return {
-    args: transport.args,
-    command: transport.command,
-    env: transport.env,
-    headers: transport.headers
-      ? Object.fromEntries(
-          Object.entries(transport.headers).map(([key, value]) => [
-            key,
-            value.replace(/\$\{?[A-Z_][A-Z0-9_]*\}?/gu, "<env-ref>"),
-          ]),
-        )
-      : undefined,
-    type: transport.type,
-    url: transport.url,
-  };
-}
-
 async function readMcpConnectorConfig(
-  connectorId: McpConnectorId,
+  connectorId: ConnectorId,
 ): Promise<McpConnectorConfig> {
   const config = await readConnectorConfig<McpConnectorConfig>(connectorId, {
     enabled: false,
@@ -172,7 +158,7 @@ async function readMcpConnectorConfig(
 }
 
 async function recordMcpRun(
-  connectorId: McpConnectorId,
+  connectorId: ConnectorId,
   state: Awaited<ReturnType<typeof readConnectorState>>,
   run: {
     rawFiles: string[];
@@ -194,7 +180,6 @@ async function recordMcpRun(
 }
 
 function getToolCallPolicy(
-  connectorId: McpConnectorId,
   config: McpConnectorConfig,
   tool: McpToolDescriptor,
 ): { allowed: true; reason: string } | { allowed: false; reason: string } {
@@ -210,7 +195,6 @@ function getToolCallPolicy(
   }
 
   if (
-    connectorId === "notion" &&
     isHostedNotionTransport(config.transport) &&
     looksLikeReadOnlyNotionTool(tool)
   ) {

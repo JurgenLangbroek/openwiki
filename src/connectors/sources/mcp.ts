@@ -7,7 +7,7 @@ import {
   writeRawJson,
 } from "../io.js";
 import { executeMcpReadOnlyOperations, listMcpTools } from "../mcp-client.js";
-import { sanitizeMcpTransport } from "../mcp-runtime.js";
+import { sanitizeMcpTransport } from "../mcp-shared.js";
 import type {
   ConnectorDefinition,
   ConnectorId,
