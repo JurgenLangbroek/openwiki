@@ -1,0 +1,3 @@
+# The Brain Wiki is a read-only observer of work systems
+
+Connectors that reach a tool gateway (e.g. Glean's MCP Gateway, which proxies write-capable tools like Jira comments and Slack messages) enforce a deny-by-default, read-only tool policy at the connector layer — writes are never callable through openwiki, in scheduled or interactive runs alike. We chose this over per-call human approval (HITL) because Brain Wiki ingestion runs unattended on a schedule where no human is present, and a synthesis hallucination that escapes as a Jira comment or Slack message is a colleague-visible incident. "Act on my wiki" is a different product than "build my wiki"; write workflows belong in interactive assistant sessions outside openwiki, where approval is real.
