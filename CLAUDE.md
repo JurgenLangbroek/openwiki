@@ -1,14 +1,6 @@
-## OpenWiki
+# CLAUDE.md
 
-This repository has documentation located in the /openwiki directory.
-
-Start here:
-
-- [OpenWiki quickstart](openwiki/quickstart.md)
-
-OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 <!-- OPENWIKI:START -->
 
@@ -19,3 +11,46 @@ This repository uses OpenWiki for recurring code documentation. Start with `open
 The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
 
 <!-- OPENWIKI:END -->
+
+## Commands
+
+```sh
+pnpm install            # install dependencies
+pnpm test               # run the Vitest suite
+pnpm vitest run test/env.test.ts   # run a single test file
+pnpm typecheck          # tsc --noEmit
+pnpm lint:check         # eslint (pnpm lint to autofix)
+pnpm format:check       # prettier (pnpm format to write)
+pnpm build              # compile to dist/ (cleans first)
+pnpm dev                # run the CLI from source via tsx
+```
+
+Run `pnpm format`, `pnpm lint`, and `pnpm test` before opening a PR — they match CI (`.github/workflows/checks.yml`).
+
+To exercise the CLI against another repository, build and `pnpm link --global`, then run `openwiki` from the target repo (see DEVELOPMENT.md). `OPENWIKI_DEV=1 openwiki --dry-run` does a dry run.
+
+## What this is
+
+A TypeScript ESM CLI (`openwiki` binary, Node >= 20) that runs a DeepAgents documentation agent with an Ink (React) terminal UI. Two modes:
+
+- **code** — writes repository documentation into the target repo's `openwiki/` directory; run metadata in `openwiki/.last-update.json`.
+- **personal** — builds a local "personal brain" wiki under the OpenWiki home from connector sources (Gmail, Slack, Notion via MCP, X, Hacker News, web search, local git repos).
+
+## Architecture
+
+Execution flow: `src/commands.ts` parses argv → `src/cli.tsx` (Ink app) drives onboarding/credentials and run lifecycle → `src/agent/index.ts` creates the provider-specific model and DeepAgents runtime → `src/agent/prompt.ts` assembles the run instructions → the agent writes docs through a local-shell backend rooted at the target (repo root in code mode, the wiki dir in personal mode).
+
+- **User-visible semantics are split** across `src/commands.ts`, `src/cli.tsx`, and `src/agent/*`. When changing CLI behavior, verify both the parser and the agent prompt/runtime.
+- **Providers are centralized in `src/constants.ts`** (`PROVIDER_CONFIGS`, `OpenWikiProvider`, env key names, model lists). Adding or changing a provider also means updating the model-creation branch in `src/agent/index.ts`.
+- **OpenWiki home tree** (`~/.openwiki`: `wiki/`, `connectors/`, `skills/`, `.env`, sqlite checkpoint) is resolved by lazy accessors in `src/openwiki-home.ts`, overridable via the `OPENWIKI_HOME` env var. Always call the accessors at use time — never capture a home-derived path in a module-level constant, or the override (used by tests) breaks.
+- **Credentials** live in `$OPENWIKI_HOME/.env`, managed by `src/env.ts`. `MANAGED_ENV_KEYS` there is the single source of truth for every env var OpenWiki reads or persists; diagnostics and debug key lists derive from it. The interactive setup wizard is `src/credentials.tsx`.
+- **Connectors**: `src/connectors/registry.ts` + one module per source in `src/connectors/sources/`. All connector IO goes through `src/connectors/io.ts` and lands under `$OPENWIKI_HOME/connectors/<id>/` (`config.json`, `state.json`, `raw/<run-id>/`). The agent reaches connectors only through the constrained tools in `src/connectors/tools.ts`; ingestion runs are orchestrated by `src/ingestion.ts`. To add a connector, follow the skill in `src/connectors/write-connector-skill.ts`.
+- **Scheduling**: `src/schedules.ts` installs macOS launchd agents for recurring ingestion; `examples/` holds the GitHub Actions / GitLab CI templates for scheduled doc updates.
+
+## Tests
+
+Vitest, in `test/*.test.ts`. Tests that need an isolated home point `OPENWIKI_HOME` at a temp dir (see `test/openwiki-home.test.ts`); prefer that over stubbing `HOME` and resetting modules.
+
+## Contribution rules (binding for agents)
+
+From CONTRIBUTING.md: **one PR = one change**, tightly scoped. PR titles use Conventional Commits (`feat:`, `fix:`, `chore:`). Link an issue for anything non-trivial and describe how you tested. If a change you're about to make would violate CONTRIBUTING.md, stop and surface it to the human instead of proceeding.
