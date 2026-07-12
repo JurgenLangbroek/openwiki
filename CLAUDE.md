@@ -65,5 +65,5 @@ The workflow runs on the Matt Pocock skills, in roughly this order:
 - `/grill-with-docs` — relentless interview to stress-test a plan or design; produces the domain glossary in `CONTEXT.md` and ADRs in `docs/adr/` as it goes. Read both before designing or naming things: `CONTEXT.md` is the ubiquitous language, and ADRs (e.g. `docs/adr/0001-brain-wiki-is-a-read-only-observer.md`) are binding decisions.
 - `/to-spec` — synthesize the conversation into a spec on the issue tracker.
 - `/to-tickets` — break a spec into tracer-bullet tickets with explicit blocking edges.
-- `/implement` — implement a ticket: TDD at pre-agreed seams, regular typechecks, full suite at the end.
+- `/implement` — implement a ticket: TDD at pre-agreed seams, regular typechecks, full suite at the end. Delegate the implementation itself to the Codex subagent (`/codex:rescue`, i.e. the `codex:codex-rescue` agent): hand it a full design brief, then review, verify, and commit from the main session. Make sure `node_modules` is installed first, or its verification phase hangs hunting for binaries; if Codex fails with "model requires a newer version of Codex", upgrade the CLI (`npm install -g @openai/codex`) and kill the stale app-server broker so the shared runtime restarts on the new binary.
 - `/code-review` — two-axis review (repo standards + originating spec) before the work ships.
