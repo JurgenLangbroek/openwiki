@@ -251,7 +251,7 @@ function isDeterministicConnector(connector: ConnectorRuntime): boolean {
   return !connector.supportsAgenticDiscovery;
 }
 
-function createSourceUpdateMessage({
+export function createSourceUpdateMessage({
   config,
   connector,
   deterministicPull,
@@ -330,7 +330,7 @@ Instructions:
 `.trim();
 }
 
-function createSourceSynthesisPolicy(connectorId: ConnectorId): string {
+export function createSourceSynthesisPolicy(connectorId: ConnectorId): string {
   return `
 - Synthesize into canonical cross-source files when relevant: /open-questions.md for unresolved memory/wiki questions, /themes.md for recurring trends, /commitments.md for work tasks/follow-ups, /personal-logistics.md for non-work life-admin items, /quickstart.md for high-level navigation/current status, and /sources/${connectorId}.md for compact source evidence.
 - Apply confidence labels: confirmed, source-backed, watchlist, or saved-context. Keep weak/watchlist items out of /quickstart.md unless they materially affect current status.
@@ -347,7 +347,11 @@ ${createConnectorSynthesisGuidance(connectorId)}
 function createConnectorSynthesisGuidance(connectorId: ConnectorId): string {
   switch (connectorId) {
     case "glean":
-      return "";
+      return `
+- Melt durable Glean evidence from feed items, transcripts, mails, and tickets into /projects/<slug>.md and /people/<slug>.md pages. Opening a project page should tell the state of the project, not a diary of events. Never create meeting logs, journals, or per-day digests.
+- Every wiki claim sourced from Glean must carry the item's Glean permalink as a markdown link to the item's url, so readers can jump from the wiki to the source in one click.
+- Keep /sources/glean.md as a compact evidence index only: include per-run and per-stream coverage counts and pointers, never the synthesis layer.
+- Record real uncertainties as Open Questions according to the existing open-questions policy.`;
     case "google":
       return `
 - For Gmail evidence, classify each candidate item before writing: action_required, scheduled_commitment, decision_or_approval, direct_request, important_update, people_or_org_signal, project_context, security_or_account_notice, newsletter_or_digest, transaction_or_receipt, promotion_or_marketing, personal_logistics, or noise.
