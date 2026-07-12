@@ -51,6 +51,6 @@ Execution flow: `src/commands.ts` parses argv → `src/cli.tsx` (Ink app) drives
 
 Vitest, in `test/*.test.ts`. Tests that need an isolated home point `OPENWIKI_HOME` at a temp dir (see `test/openwiki-home.test.ts`); prefer that over stubbing `HOME` and resetting modules.
 
-## Contribution rules (binding for agents)
+## Fork status
 
-From CONTRIBUTING.md: **one PR = one change**, tightly scoped. PR titles use Conventional Commits (`feat:`, `fix:`, `chore:`). Link an issue for anything non-trivial and describe how you tested. If a change you're about to make would violate CONTRIBUTING.md, stop and surface it to the human instead of proceeding.
+This is a private fork of `langchain-ai/openwiki`. Never open PRs against or push to the upstream repository — all work lands on this fork's `main` (issues and PRs live here too). CONTRIBUTING.md is upstream's policy and does not apply to work on this fork.
