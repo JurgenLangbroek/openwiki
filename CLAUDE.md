@@ -59,6 +59,8 @@ This is a private fork of `langchain-ai/openwiki`. Never open PRs against or pus
 
 Work is driven from GitHub issues on this fork and ships as feature branch → PR against this fork's `main` → rebase merge, with `Closes #N` (one per line) in the PR body so issues auto-close. `.github/workflows/checks.yml` runs format/lint/test on PRs, but Actions does not currently run on this fork — always verify locally (`pnpm typecheck && pnpm test && pnpm lint:check && pnpm format:check`) before merging. `openwiki-update.yml` is the scheduled wiki refresh, not a PR check.
 
+Upstream syncs are the exception to the PR flow: merge `upstream/main` into `main` as a plain merge commit and push directly after the local checks pass — never via a rebase-merged PR, which would rewrite upstream SHAs and break future syncs (the `upstream` remote is fetch-only by design).
+
 The workflow runs on the Matt Pocock skills, in roughly this order:
 
 - `/wayfinder` — chart a big, foggy chunk of work as investigation tickets on the issue tracker and resolve them until the way is clear.
