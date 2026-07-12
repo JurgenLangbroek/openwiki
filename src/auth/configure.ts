@@ -100,6 +100,14 @@ function getConnectorIdForProvider(provider: AuthProviderId): ConnectorId {
 }
 
 function getDefaultConfig(provider: AuthProviderId): unknown {
+  if (provider === "glean") {
+    return {
+      enabled: true,
+      mcpPath: "/mcp/default",
+      note: "Resolve the Glean backend from backendBaseUrl, instance, or email in this config, or from OPENWIKI_GLEAN_BACKEND_URL, OPENWIKI_GLEAN_INSTANCE, or OPENWIKI_GLEAN_EMAIL.",
+    };
+  }
+
   if (provider === "notion") {
     return {
       enabled: true,
@@ -171,6 +179,14 @@ function getNextSteps(
   const prefix = wroteConfig
     ? "Review the generated connector config."
     : "Existing connector config was preserved; pass --force to overwrite it.";
+
+  if (provider === "glean") {
+    return [
+      prefix,
+      "Run openwiki --update to probe the authenticated Glean tenant's MCP tool catalog.",
+      "Set backendBaseUrl, instance, or email in the connector config if OPENWIKI_GLEAN_BACKEND_URL, OPENWIKI_GLEAN_INSTANCE, and OPENWIKI_GLEAN_EMAIL are unset.",
+    ];
+  }
 
   if (provider === "notion") {
     return [

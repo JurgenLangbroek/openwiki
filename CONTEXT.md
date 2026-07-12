@@ -24,6 +24,9 @@ The agent step that reads raw items and updates Brain Wiki pages, assigning each
 The deterministic, scheduled part of ingestion: a connector fetches a bounded window of raw items with no agent involvement. Reproducible for a given window.
 _Avoid_: sync, scrape
 
+**Capability Probe**:
+The authenticated check an ingestion run makes against a tenant to record which tools or streams it actually offers, written as a raw probe artifact (for example, `probe.json` for Glean's MCP tool catalog). Distinct from a Pull, which fetches evidence.
+
 **Exploration**:
 Agent-driven evidence gathering during synthesis: the agent decides live which questions to ask a connector's tools (search, chat, document reads) to deepen a page.
 _Avoid_: agentic discovery (code-level flag name)

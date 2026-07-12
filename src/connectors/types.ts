@@ -1,5 +1,6 @@
 export type ConnectorId =
   | "git-repo"
+  | "glean"
   | "google"
   | "hackernews"
   | "notion"

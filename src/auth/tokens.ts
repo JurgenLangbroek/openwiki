@@ -1,5 +1,9 @@
 import { loadOpenWikiEnv, saveOpenWikiEnv } from "../env.js";
-import { getAuthProvider } from "./providers.js";
+import {
+  AUTH_PROVIDERS,
+  getAuthProvider,
+  resolveOAuthMcpResourceUrl,
+} from "./providers.js";
 import type {
   AuthProviderId,
   OAuthProviderConfig,
@@ -53,6 +57,7 @@ export async function refreshOAuthAccessToken(
   await loadOpenWikiEnv();
 
   const provider = getAuthProvider(providerId);
+  const mcpResourceUrl = await resolveOAuthMcpResourceUrl(provider);
   const refreshTokenEnvKey = provider.tokenMapping.refreshTokenEnvKey;
   const refreshToken = refreshTokenEnvKey
     ? process.env[refreshTokenEnvKey]
@@ -80,7 +85,7 @@ export async function refreshOAuthAccessToken(
     );
   }
 
-  const tokenUrl = await resolveTokenUrl(provider);
+  const tokenUrl = await resolveTokenUrl(provider, mcpResourceUrl);
   const body = new URLSearchParams({
     client_id: clientId,
     grant_type: "refresh_token",
@@ -91,8 +96,8 @@ export async function refreshOAuthAccessToken(
     body.set("client_secret", clientSecret ?? "");
   }
 
-  if (provider.mcpResourceUrl) {
-    body.set("resource", provider.mcpResourceUrl);
+  if (mcpResourceUrl) {
+    body.set("resource", mcpResourceUrl);
   }
 
   const response = await fetch(tokenUrl, {
@@ -137,7 +142,7 @@ export function isOAuthAccessTokenExpired(providerId: AuthProviderId): boolean {
 export function getOAuthProviderIdForAccessTokenEnvKey(
   envKey: string,
 ): AuthProviderId | null {
-  const providerIds: AuthProviderId[] = ["gmail", "notion", "slack", "x"];
+  const providerIds = Object.keys(AUTH_PROVIDERS) as AuthProviderId[];
 
   for (const providerId of providerIds) {
     const provider = getAuthProvider(providerId);
@@ -231,13 +236,16 @@ function getProviderClientId(
   return envKey ? process.env[envKey] : undefined;
 }
 
-async function resolveTokenUrl(provider: OAuthProviderConfig): Promise<string> {
+async function resolveTokenUrl(
+  provider: OAuthProviderConfig,
+  mcpResourceUrl: string | undefined,
+): Promise<string> {
   if (provider.tokenUrl) {
     return provider.tokenUrl;
   }
 
-  if (provider.mcpResourceUrl) {
-    return await discoverMcpTokenEndpoint(provider.mcpResourceUrl);
+  if (mcpResourceUrl) {
+    return await discoverMcpTokenEndpoint(mcpResourceUrl);
   }
 
   throw new Error(`${provider.displayName} OAuth token endpoint is unknown.`);
