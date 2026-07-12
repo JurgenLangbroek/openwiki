@@ -12,15 +12,24 @@ import {
   getOpenWikiLocalWikiDir,
   resolveConnectorRawPath,
 } from "../openwiki-home.js";
-import { createConnectorRegistry, isConnectorId } from "./registry.js";
+import {
+  CONNECTOR_IDS,
+  createConnectorRegistry,
+  isConnectorId,
+} from "./registry.js";
 import {
   callMcpConnectorTool,
   discoverMcpConnectorTools,
+  getMcpConnectorIds,
   isMcpConnectorId,
 } from "./mcp-runtime.js";
 import type { ConnectorId, ConnectorIngestOptions } from "./types.js";
 
 export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
+  const connectorIds = [...CONNECTOR_IDS].sort();
+  const mcpConnectorIds = getMcpConnectorIds();
+  const mcpConnectorId = mcpConnectorIds[0];
+
   return [
     new DynamicStructuredTool({
       name: "openwiki_list_connectors",
@@ -35,14 +44,13 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
     }),
     new DynamicStructuredTool({
       name: "openwiki_list_mcp_tools",
-      description:
-        'List live MCP tools for a configured MCP connector and write discovery under ~/.openwiki/connectors/<id>/raw. Input: {"connectorId":"notion"}. Use exact returned tool names.',
+      description: `List live MCP tools for a configured MCP connector and write discovery under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId })}. Use exact returned tool names.`,
       schema: {
         type: "object",
         properties: {
           connectorId: {
             type: "string",
-            enum: ["notion"],
+            enum: mcpConnectorIds,
           },
         },
         required: ["connectorId"],
@@ -55,8 +63,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
     }),
     new DynamicStructuredTool({
       name: "openwiki_call_mcp_tool",
-      description:
-        'Call one exact discovered read-only MCP tool and write the result under ~/.openwiki/connectors/<id>/raw. Input: {"connectorId":"notion","toolName":"exact_tool_name","args":{"query":"Applied AI"}}.',
+      description: `Call one exact discovered read-only MCP tool and write the result under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId, toolName: "exact_tool_name", args: { query: "Applied AI" } })}.`,
       schema: {
         type: "object",
         properties: {
@@ -66,7 +73,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
           },
           connectorId: {
             type: "string",
-            enum: ["notion"],
+            enum: mcpConnectorIds,
           },
           toolName: {
             type: "string",
@@ -93,15 +100,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
         properties: {
           connectorId: {
             type: "string",
-            enum: [
-              "git-repo",
-              "google",
-              "hackernews",
-              "notion",
-              "slack",
-              "web-search",
-              "x",
-            ],
+            enum: connectorIds,
           },
           limit: { type: "number" },
           streams: {
@@ -141,15 +140,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
         properties: {
           connectorId: {
             type: "string",
-            enum: [
-              "git-repo",
-              "google",
-              "hackernews",
-              "notion",
-              "slack",
-              "web-search",
-              "x",
-            ],
+            enum: connectorIds,
           },
         },
         required: ["connectorId"],
@@ -169,15 +160,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
         properties: {
           connectorId: {
             type: "string",
-            enum: [
-              "git-repo",
-              "google",
-              "hackernews",
-              "notion",
-              "slack",
-              "web-search",
-              "x",
-            ],
+            enum: connectorIds,
           },
           maxBytes: {
             type: "number",

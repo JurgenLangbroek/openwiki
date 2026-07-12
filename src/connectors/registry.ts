@@ -17,10 +17,9 @@ export const CONNECTOR_IDS = [
   "slack",
 ] as const satisfies readonly ConnectorId[];
 
-export function createConnectorRegistry(): Record<
-  ConnectorId,
-  ConnectorRuntime
-> {
+export type ConnectorRegistry = Record<ConnectorId, ConnectorRuntime>;
+
+export function createConnectorRegistry(): ConnectorRegistry {
   return {
     "git-repo": createGitRepoConnector(),
     google: createGmailConnector(),
