@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import http from "node:http";
 import { AddressInfo } from "node:net";
 import { loadOpenWikiEnv, saveOpenWikiEnv } from "../env.js";
-import { getAuthProvider } from "./providers.js";
+import { getAuthProvider, resolveOAuthMcpResourceUrl } from "./providers.js";
 import type {
   AuthProviderId,
   OAuthClientRegistration,
@@ -56,6 +56,7 @@ export async function runOAuthAuth(
 ): Promise<OAuthRunResult> {
   await loadOpenWikiEnv();
   const provider = getAuthProvider(providerId);
+  const mcpResourceUrl = await resolveOAuthMcpResourceUrl(provider);
   const callback = await createCallbackServer(provider);
   const state = createRandomUrlToken();
   const codeVerifier = createRandomUrlToken(64);
@@ -65,6 +66,7 @@ export async function runOAuthAuth(
     const registration = await resolveClientRegistration(
       provider,
       callback.redirectUri,
+      mcpResourceUrl,
     );
     const authUrl = createAuthorizationUrl(
       provider,
@@ -72,6 +74,7 @@ export async function runOAuthAuth(
       callback.redirectUri,
       state,
       codeChallenge,
+      mcpResourceUrl,
     );
 
     const openedBrowser = await openBrowser(authUrl);
@@ -94,6 +97,7 @@ export async function runOAuthAuth(
     const tokenResponse = await exchangeAuthorizationCode({
       code,
       codeVerifier,
+      mcpResourceUrl,
       provider,
       redirectUri: callback.redirectUri,
       registration,
@@ -113,10 +117,11 @@ export async function runOAuthAuth(
 export function formatAuthProviderList(): string {
   return [
     "Available auth providers:",
-    "  slack   Slack OAuth user token for user-visible conversations",
+    "  glean   Glean OAuth for REST and MCP using dynamic client registration",
     "  gmail   Gmail read-only OAuth token",
-    "  x       X/Twitter OAuth token for timelines, lists, and bookmarks",
     "  notion  Notion hosted MCP OAuth using dynamic client registration",
+    "  slack   Slack OAuth user token for user-visible conversations",
+    "  x       X/Twitter OAuth token for timelines, lists, and bookmarks",
     "",
     "Run OAuth, create connector config, and discover MCP tools when available:",
     "  openwiki auth <provider>",
@@ -130,9 +135,10 @@ export function formatAuthProviderList(): string {
 async function resolveClientRegistration(
   provider: OAuthProviderConfig,
   redirectUri: string,
+  mcpResourceUrl: string | undefined,
 ): Promise<OAuthClientRegistration> {
-  if (provider.mcpResourceUrl) {
-    return registerMcpOAuthClient(provider, redirectUri);
+  if (mcpResourceUrl) {
+    return registerMcpOAuthClient(provider, redirectUri, mcpResourceUrl);
   }
 
   if (!provider.authUrl || !provider.tokenUrl || !provider.clientIdEnvKey) {
@@ -160,14 +166,10 @@ async function resolveClientRegistration(
 async function registerMcpOAuthClient(
   provider: OAuthProviderConfig,
   redirectUri: string,
+  mcpResourceUrl: string,
 ): Promise<OAuthClientRegistration> {
-  if (!provider.mcpResourceUrl) {
-    throw new Error("MCP OAuth provider requires a resource URL.");
-  }
-
-  const protectedMetadata = await discoverProtectedResourceMetadata(
-    provider.mcpResourceUrl,
-  );
+  const protectedMetadata =
+    await discoverProtectedResourceMetadata(mcpResourceUrl);
   const authServer = protectedMetadata.authorization_servers?.[0];
 
   if (!authServer) {
@@ -272,6 +274,7 @@ function createAuthorizationUrl(
   redirectUri: string,
   state: string,
   codeChallenge: string,
+  mcpResourceUrl: string | undefined,
 ): string {
   const authUrl = new URL(registration.authUrl);
   authUrl.searchParams.set("client_id", registration.clientId);
@@ -291,8 +294,8 @@ function createAuthorizationUrl(
     }
   }
 
-  if (provider.mcpResourceUrl) {
-    authUrl.searchParams.set("resource", provider.mcpResourceUrl);
+  if (mcpResourceUrl) {
+    authUrl.searchParams.set("resource", mcpResourceUrl);
   }
 
   return authUrl.toString();
@@ -301,12 +304,14 @@ function createAuthorizationUrl(
 async function exchangeAuthorizationCode({
   code,
   codeVerifier,
+  mcpResourceUrl,
   provider,
   redirectUri,
   registration,
 }: {
   code: string;
   codeVerifier: string;
+  mcpResourceUrl: string | undefined;
   provider: OAuthProviderConfig;
   redirectUri: string;
   registration: OAuthClientRegistration;
@@ -323,8 +328,8 @@ async function exchangeAuthorizationCode({
     body.set("client_secret", registration.clientSecret ?? "");
   }
 
-  if (provider.mcpResourceUrl) {
-    body.set("resource", provider.mcpResourceUrl);
+  if (mcpResourceUrl) {
+    body.set("resource", mcpResourceUrl);
   }
 
   const response = await fetch(registration.tokenUrl, {

@@ -346,6 +346,8 @@ ${createConnectorSynthesisGuidance(connectorId)}
 
 function createConnectorSynthesisGuidance(connectorId: ConnectorId): string {
   switch (connectorId) {
+    case "glean":
+      return "";
     case "google":
       return `
 - For Gmail evidence, classify each candidate item before writing: action_required, scheduled_commitment, decision_or_approval, direct_request, important_update, people_or_org_signal, project_context, security_or_account_notice, newsletter_or_digest, transaction_or_receipt, promotion_or_marketing, personal_logistics, or noise.

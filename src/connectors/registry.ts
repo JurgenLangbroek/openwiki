@@ -1,4 +1,5 @@
 import { createGitRepoConnector } from "./sources/git-repo.js";
+import { createGleanConnector } from "./sources/glean.js";
 import { createGmailConnector } from "./sources/gmail.js";
 import { createHackerNewsConnector } from "./sources/hackernews.js";
 import { createMcpConnector } from "./sources/mcp.js";
@@ -9,6 +10,7 @@ import type { ConnectorId, ConnectorRuntime } from "./types.js";
 
 export const CONNECTOR_IDS = [
   "git-repo",
+  "glean",
   "notion",
   "x",
   "google",
@@ -22,6 +24,7 @@ export type ConnectorRegistry = Record<ConnectorId, ConnectorRuntime>;
 export function createConnectorRegistry(): ConnectorRegistry {
   return {
     "git-repo": createGitRepoConnector(),
+    glean: createGleanConnector(),
     google: createGmailConnector(),
     hackernews: createHackerNewsConnector(),
     notion: createMcpConnector({

@@ -1,6 +1,11 @@
 import {
   OPENWIKI_GMAIL_ACCESS_TOKEN_ENV_KEY,
   OPENWIKI_GMAIL_REFRESH_TOKEN_ENV_KEY,
+  OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY,
+  OPENWIKI_GLEAN_CLIENT_ID_ENV_KEY,
+  OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY,
+  OPENWIKI_GLEAN_TOKEN_EXPIRES_AT_ENV_KEY,
+  OPENWIKI_GLEAN_TOKEN_TYPE_ENV_KEY,
   OPENWIKI_NOTION_MCP_ACCESS_TOKEN_ENV_KEY,
   OPENWIKI_NOTION_MCP_CLIENT_ID_ENV_KEY,
   OPENWIKI_NOTION_MCP_REFRESH_TOKEN_ENV_KEY,
@@ -14,9 +19,24 @@ import {
   OPENWIKI_X_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_X_REFRESH_TOKEN_ENV_KEY,
 } from "../constants.js";
+import { resolveGleanTarget } from "../connectors/sources/glean-backend.js";
 import type { AuthProviderId, OAuthProviderConfig } from "./types.js";
 
 export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
+  glean: {
+    clientAuth: "none",
+    displayName: "Glean",
+    id: "glean",
+    resolveMcpResourceUrl: async () => (await resolveGleanTarget()).mcpUrl,
+    scopes: ["chat", "mcp", "search"],
+    tokenMapping: {
+      accessTokenEnvKey: OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY,
+      clientIdEnvKey: OPENWIKI_GLEAN_CLIENT_ID_ENV_KEY,
+      expiresAtEnvKey: OPENWIKI_GLEAN_TOKEN_EXPIRES_AT_ENV_KEY,
+      refreshTokenEnvKey: OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY,
+      tokenTypeEnvKey: OPENWIKI_GLEAN_TOKEN_TYPE_ENV_KEY,
+    },
+  },
   gmail: {
     authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     clientAuth: "client_secret_post",
@@ -100,6 +120,14 @@ export function getAuthProvider(
   providerId: AuthProviderId,
 ): OAuthProviderConfig {
   return AUTH_PROVIDERS[providerId];
+}
+
+export async function resolveOAuthMcpResourceUrl(
+  provider: OAuthProviderConfig,
+): Promise<string | undefined> {
+  return provider.resolveMcpResourceUrl
+    ? await provider.resolveMcpResourceUrl()
+    : provider.mcpResourceUrl;
 }
 
 export function isAuthProviderId(value: string): value is AuthProviderId {

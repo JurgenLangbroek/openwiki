@@ -1,4 +1,4 @@
-export type AuthProviderId = "gmail" | "notion" | "slack" | "x";
+export type AuthProviderId = "glean" | "gmail" | "notion" | "slack" | "x";
 
 export type OAuthClientAuth = "client_secret_post" | "none";
 
@@ -11,6 +11,7 @@ export type OAuthProviderConfig = {
   extraAuthParams?: Record<string, string>;
   id: AuthProviderId;
   mcpResourceUrl?: string;
+  resolveMcpResourceUrl?: () => Promise<string>;
   scopes: string[];
   tokenUrl?: string;
   tokenMapping: OAuthTokenMapping;
