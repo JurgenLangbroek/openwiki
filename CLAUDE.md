@@ -54,3 +54,16 @@ Vitest, in `test/*.test.ts`. Tests that need an isolated home point `OPENWIKI_HO
 ## Fork status
 
 This is a private fork of `langchain-ai/openwiki`. Never open PRs against or push to the upstream repository — all work lands on this fork's `main` (issues and PRs live here too). CONTRIBUTING.md is upstream's policy and does not apply to work on this fork.
+
+## Way of working
+
+Work is driven from GitHub issues on this fork and ships as feature branch → PR against this fork's `main` → rebase merge, with `Closes #N` (one per line) in the PR body so issues auto-close. `.github/workflows/checks.yml` runs format/lint/test on PRs, but Actions does not currently run on this fork — always verify locally (`pnpm typecheck && pnpm test && pnpm lint:check && pnpm format:check`) before merging. `openwiki-update.yml` is the scheduled wiki refresh, not a PR check.
+
+The workflow runs on the Matt Pocock skills, in roughly this order:
+
+- `/wayfinder` — chart a big, foggy chunk of work as investigation tickets on the issue tracker and resolve them until the way is clear.
+- `/grill-with-docs` — relentless interview to stress-test a plan or design; produces the domain glossary in `CONTEXT.md` and ADRs in `docs/adr/` as it goes. Read both before designing or naming things: `CONTEXT.md` is the ubiquitous language, and ADRs (e.g. `docs/adr/0001-brain-wiki-is-a-read-only-observer.md`) are binding decisions.
+- `/to-spec` — synthesize the conversation into a spec on the issue tracker.
+- `/to-tickets` — break a spec into tracer-bullet tickets with explicit blocking edges.
+- `/implement` — implement a ticket: TDD at pre-agreed seams, regular typechecks, full suite at the end.
+- `/code-review` — two-axis review (repo standards + originating spec) before the work ships.
