@@ -14,10 +14,12 @@ export type GleanBackendInput = {
 
 export type GleanTarget = {
   backendUrl: string;
+  gatewayUrl: string;
   mcpUrl: string;
 };
 
 export type GleanTargetConfig = GleanBackendInput & {
+  gatewayPath?: string;
   mcpPath?: string;
 };
 
@@ -81,6 +83,7 @@ export async function resolveGleanTarget(
   const resolvedConfig =
     config ??
     (await readConnectorConfig<GleanTargetConfig>("glean", {
+      gatewayPath: "/mcp/gateway/proxy",
       mcpPath: "/mcp/default",
     }));
   const backendUrl = resolveGleanBackendUrl({
@@ -98,13 +101,19 @@ export async function resolveGleanTarget(
     ),
   });
   const mcpPath = resolvedConfig.mcpPath?.trim() ?? "/mcp/default";
+  const gatewayPath =
+    resolvedConfig.gatewayPath?.trim() ?? "/mcp/gateway/proxy";
 
   if (!mcpPath.startsWith("/")) {
     throw new Error("Glean mcpPath must start with /.");
   }
+  if (!gatewayPath.startsWith("/")) {
+    throw new Error("Glean gatewayPath must start with /.");
+  }
 
   return {
     backendUrl,
+    gatewayUrl: `${backendUrl}${gatewayPath}`,
     mcpUrl: `${backendUrl}${mcpPath}`,
   };
 }

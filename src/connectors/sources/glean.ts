@@ -11,14 +11,21 @@ import {
   writeConnectorState,
   writeRawJson,
 } from "../io.js";
+import {
+  createGatewayUnavailableWarning,
+  isMcpEndpointUnavailableError,
+} from "../mcp-errors.js";
 import { listMcpTools, type McpToolDescriptor } from "../mcp-client.js";
 import { annotateToolsWithPolicy } from "../tool-policy.js";
+import { writeToolCatalog } from "../tool-catalog.js";
 import type {
   ConnectorDefinition,
   ConnectorIngestResult,
   ConnectorRetentionConfig,
   ConnectorRuntime,
   ConnectorState,
+  McpConnectorConfig,
+  McpEndpointId,
 } from "../types.js";
 import { resolveGleanTarget, type GleanTargetConfig } from "./glean-backend.js";
 
@@ -47,7 +54,10 @@ export type GleanProbeTransport = {
     backendUrl: string;
     sinceDate: string;
   }) => Promise<unknown>;
-  listTools: (input: { mcpUrl: string }) => Promise<McpToolDescriptor[]>;
+  listTools: (input: {
+    endpoint: McpEndpointId;
+    mcpUrl: string;
+  }) => Promise<McpToolDescriptor[]>;
 };
 
 type GleanConfig = GleanTargetConfig &
@@ -81,6 +91,7 @@ const DEFAULT_GLEAN_CONFIG: GleanConfig = {
     maxItems: 20,
     transcriptDatasources: ["fellow"],
   },
+  gatewayPath: "/mcp/gateway/proxy",
   mcpPath: "/mcp/default",
   messagingApps: ["slack"],
   windowHours: 48,
@@ -93,6 +104,7 @@ export function createGleanConnector(overrides?: {
 }): ConnectorRuntime {
   return {
     ...definition,
+    mcpEndpoints: ["default", "gateway"],
     ingest: async (): Promise<ConnectorIngestResult> => {
       const runId = createRunId();
       const config = await readConnectorConfig<GleanConfig>(
@@ -128,9 +140,20 @@ export function createGleanConnector(overrides?: {
         );
       }
 
-      let tools: McpToolDescriptor[];
+      const liveTools: NonNullable<ConnectorIngestResult["liveTools"]> = [];
+      const rawFiles: string[] = [];
+      let defaultProbe: GleanEndpointProbeResult;
       try {
-        tools = await transport.listTools({ mcpUrl: target.mcpUrl });
+        defaultProbe = await probeGleanEndpoint({
+          allowedTools: config.allowedTools,
+          backendUrl: target.backendUrl,
+          endpoint: "default",
+          liveTools,
+          mcpUrl: target.mcpUrl,
+          rawFiles,
+          runId,
+          transport,
+        });
       } catch {
         return createEmptyResult(
           runId,
@@ -139,25 +162,32 @@ export function createGleanConnector(overrides?: {
         );
       }
 
-      const fetchedAt = new Date().toISOString();
-      const liveTools = annotateToolsWithPolicy(tools, config.allowedTools);
+      const { fetchedAt, tools } = defaultProbe;
       const windowHours = normalizeWindowHours(config.windowHours);
       const sinceDate = calculateSinceDate(fetchedAt, windowHours);
-      const rawFiles = [
-        await writeRawJson("glean", runId, "probe.json", {
-          backendUrl: target.backendUrl,
-          fetchedAt,
-          mcpUrl: target.mcpUrl,
-          toolCount: tools.length,
-          tools: tools.map(({ annotations, description, name }) => ({
-            annotations,
-            description,
-            name,
-          })),
-        }),
-      ];
       let state = await readConnectorState("glean");
       const warnings: string[] = [];
+
+      try {
+        await probeGleanEndpoint({
+          allowedTools: config.allowedTools,
+          backendUrl: target.backendUrl,
+          endpoint: "gateway",
+          fetchedAt,
+          liveTools,
+          mcpUrl: target.gatewayUrl,
+          rawFiles,
+          runId,
+          transport,
+        });
+      } catch (error) {
+        warnings.push(
+          isMcpEndpointUnavailableError(error)
+            ? createGatewayUnavailableWarning(definition.displayName)
+            : `Glean gateway probe failed: ${readErrorReason(error)}; gateway reads are disabled for this run.`,
+        );
+      }
+
       const summaries: string[] = [];
       const pulledStreams: PulledEvidenceStream[] = [];
       let succeededStreams = 0;
@@ -311,7 +341,9 @@ export function createGleanConnector(overrides?: {
   };
 }
 
-async function resolveGleanMcpConfig() {
+async function resolveGleanMcpConfig(
+  endpoint: McpEndpointId = "default",
+): Promise<McpConnectorConfig> {
   const config = await readConnectorConfig<GleanConfig>(
     "glean",
     DEFAULT_GLEAN_CONFIG,
@@ -321,19 +353,99 @@ async function resolveGleanMcpConfig() {
     throw new Error(GLEAN_DISABLED_MESSAGE);
   }
 
-  const { mcpUrl } = await resolveGleanTarget(config);
+  const { gatewayUrl, mcpUrl } = await resolveGleanTarget(config);
 
+  return createGleanEndpointConfig(
+    endpoint === "gateway" ? gatewayUrl : mcpUrl,
+    config.allowedTools,
+  );
+}
+
+function createGleanEndpointConfig(
+  url: string,
+  allowedTools: string[] | undefined,
+): McpConnectorConfig {
   return {
-    allowedTools: config.allowedTools,
-    enabled: true as const,
+    allowedTools,
+    enabled: true,
     transport: {
       headers: {
         Authorization: `Bearer \${${OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY}}`,
       },
-      type: "http" as const,
-      url: mcpUrl,
+      type: "http",
+      url,
     },
   };
+}
+
+type GleanEndpointProbeResult = {
+  fetchedAt: string;
+  tools: McpToolDescriptor[];
+};
+
+async function probeGleanEndpoint(input: {
+  allowedTools?: string[];
+  backendUrl: string;
+  endpoint: McpEndpointId;
+  fetchedAt?: string;
+  liveTools: NonNullable<ConnectorIngestResult["liveTools"]>;
+  mcpUrl: string;
+  rawFiles: string[];
+  runId: string;
+  transport: GleanProbeTransport;
+}): Promise<GleanEndpointProbeResult> {
+  const tools = await input.transport.listTools({
+    endpoint: input.endpoint,
+    mcpUrl: input.mcpUrl,
+  });
+  const fetchedAt = input.fetchedAt ?? new Date().toISOString();
+  const annotatedTools = annotateToolsWithPolicy(
+    tools,
+    input.allowedTools,
+    input.endpoint,
+  );
+  input.liveTools.push(
+    ...annotatedTools.map((tool) => ({
+      ...tool,
+      endpoint: input.endpoint,
+    })),
+  );
+
+  const writeCatalog = async () =>
+    await writeToolCatalog({
+      config: createGleanEndpointConfig(input.mcpUrl, input.allowedTools),
+      connectorId: "glean",
+      endpoint: input.endpoint,
+      generatedAt: fetchedAt,
+      tools: annotatedTools,
+    });
+  const writeProbeArtifact = async () =>
+    await writeRawJson(
+      "glean",
+      input.runId,
+      input.endpoint === "gateway" ? "gateway-probe.json" : "probe.json",
+      {
+        backendUrl: input.backendUrl,
+        fetchedAt,
+        mcpUrl: input.mcpUrl,
+        toolCount: tools.length,
+        tools: tools.map(({ annotations, description, name }) => ({
+          annotations,
+          description,
+          name,
+        })),
+      },
+    );
+
+  if (input.endpoint === "gateway") {
+    input.rawFiles.push(await writeProbeArtifact());
+    await writeCatalog();
+  } else {
+    await writeCatalog();
+    input.rawFiles.push(await writeProbeArtifact());
+  }
+
+  return { fetchedAt, tools };
 }
 
 const FEED_CATEGORIES = [

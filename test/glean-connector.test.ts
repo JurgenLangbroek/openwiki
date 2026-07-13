@@ -199,18 +199,20 @@ describe("Glean connector", () => {
     const connector = createGleanConnector({
       transport: {
         ...createEmptyGleanTransport(),
-        listTools: () =>
-          Promise.resolve([
-            { description: "Search tenant content", name: "search" },
-            {
-              annotations: { readOnlyHint: true },
-              name: "tenant_catalog",
-            },
-            {
-              description: "Create an announcement",
-              name: "create_announcement",
-            },
-          ]),
+        listTools: ({ endpoint }) =>
+          endpoint === "gateway"
+            ? Promise.resolve([])
+            : Promise.resolve([
+                { description: "Search tenant content", name: "search" },
+                {
+                  annotations: { readOnlyHint: true },
+                  name: "tenant_catalog",
+                },
+                {
+                  description: "Create an announcement",
+                  name: "create_announcement",
+                },
+              ]),
       },
     });
 
@@ -246,6 +248,7 @@ describe("Glean connector", () => {
     await writeGleanConfig({
       allowedTools: ["chat"],
       enabled: true,
+      gatewayPath: "/mcp/gateway/custom",
       instance: "acme",
       mcpPath: "/mcp/gateway",
     });
@@ -260,6 +263,17 @@ describe("Glean connector", () => {
         },
         type: "http",
         url: "https://acme-be.glean.com/mcp/gateway",
+      },
+    });
+    await expect(connector.resolveMcpConfig?.("gateway")).resolves.toEqual({
+      allowedTools: ["chat"],
+      enabled: true,
+      transport: {
+        headers: {
+          Authorization: "Bearer ${OPENWIKI_GLEAN_ACCESS_TOKEN}",
+        },
+        type: "http",
+        url: "https://acme-be.glean.com/mcp/gateway/custom",
       },
     });
   });
@@ -592,13 +606,13 @@ describe("Glean connector", () => {
   test("uses the default MCP path for the tenant probe", async () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
-    let probedUrl = "";
+    const probedUrls: string[] = [];
     const connector = createGleanConnector({
       transport: {
         ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.resolve({ items: [] }),
         listTools: ({ mcpUrl }) => {
-          probedUrl = mcpUrl;
+          probedUrls.push(mcpUrl);
           return Promise.resolve([]);
         },
       },
@@ -607,7 +621,10 @@ describe("Glean connector", () => {
     const result = await connector.ingest();
 
     expect(result.status).toBe("success");
-    expect(probedUrl).toBe("https://acme-be.glean.com/mcp/default");
+    expect(probedUrls).toEqual([
+      "https://acme-be.glean.com/mcp/default",
+      "https://acme-be.glean.com/mcp/gateway/proxy",
+    ]);
   });
 
   test("uses the OAuth token and documented bodies for every default request", async () => {
@@ -664,7 +681,7 @@ describe("Glean connector", () => {
     const result = await createGleanConnector().ingest();
 
     expect(result.status).toBe("success");
-    expect(requests).toHaveLength(8);
+    expect(requests).toHaveLength(11);
     expect(
       requests.every(
         ({ authorization }) => authorization === "Bearer secret-access-token",
@@ -679,6 +696,10 @@ describe("Glean connector", () => {
         ({ authorization }) => authorization === "Bearer secret-access-token",
       ),
     ).toBe(true);
+    const gatewayRequests = requests.filter(({ url }) =>
+      url.endsWith("/mcp/gateway/proxy"),
+    );
+    expect(gatewayRequests).toHaveLength(3);
     const feedRequest = requests.find(({ url }) =>
       url.endsWith("/rest/api/v1/feed"),
     );
@@ -1029,7 +1050,11 @@ describe("Glean connector", () => {
     const second = await connector.ingest();
     const secondArtifacts = await Promise.all(
       second.rawFiles
-        .filter((file) => path.basename(file) !== "probe.json")
+        .filter(
+          (file) =>
+            path.basename(file) !== "probe.json" &&
+            path.basename(file) !== "gateway-probe.json",
+        )
         .map(
           async (file) =>
             JSON.parse(await readFile(file, "utf8")) as {
@@ -1568,6 +1593,7 @@ describe("Glean connector", () => {
     ]);
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
+      "gateway-probe.json",
       "my-work.json",
       "messages.json",
       "calendar.json",
@@ -1594,6 +1620,7 @@ describe("Glean connector", () => {
     ]);
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
+      "gateway-probe.json",
       "feed.json",
       "messages.json",
       "calendar.json",
@@ -1632,6 +1659,7 @@ describe("Glean connector", () => {
     expect(result.message).toMatch(/openwiki auth glean/u);
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
+      "gateway-probe.json",
     ]);
     expect(result.warnings).toEqual([
       "Glean feed pull failed: 401 Unauthorized",
@@ -1660,6 +1688,7 @@ describe("Glean connector", () => {
     expect(result.status).toBe("success");
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
+      "gateway-probe.json",
       "my-work.json",
       "messages.json",
       "calendar.json",
@@ -1730,6 +1759,18 @@ describe("Glean OAuth provider", () => {
     await expect(
       getAuthProvider("glean").resolveMcpResourceUrl?.(),
     ).rejects.toThrow(/mcpPath must start with \//u);
+  });
+
+  test("rejects a configured gateway path without a leading slash", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      gatewayPath: "mcp/gateway/proxy",
+      instance: "acme",
+    });
+
+    await expect(
+      createGleanConnector().resolveMcpConfig?.("gateway"),
+    ).rejects.toThrow(/gatewayPath must start with \//u);
   });
 
   test("writes the minimal enabled connector config after authentication", async () => {

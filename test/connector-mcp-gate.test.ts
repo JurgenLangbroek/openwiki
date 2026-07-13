@@ -19,6 +19,18 @@ function getConnectorIdEnum(toolName: string): string[] {
   return schema.properties.connectorId.enum;
 }
 
+function getEndpointSchema(toolName: string): {
+  default: string;
+  enum: string[];
+} {
+  const tool = getConnectorTool(toolName);
+  const schema = tool.schema as unknown as {
+    properties: { endpoint: { default: string; enum: string[] } };
+  };
+
+  return schema.properties.endpoint;
+}
+
 function getConnectorTool(toolName: string) {
   const tool = createOpenWikiConnectorTools().find(
     (candidate) => candidate.name === toolName,
@@ -103,6 +115,24 @@ describe("MCP connector eligibility", () => {
     expect(getConnectorIdEnum("openwiki_read_raw_item")).toEqual(
       expectedConnectorIds,
     );
+  });
+
+  test("publishes default and gateway endpoints in MCP tool schemas", () => {
+    expect(getEndpointSchema("openwiki_list_mcp_tools")).toMatchObject({
+      default: "default",
+      enum: ["default", "gateway"],
+    });
+    expect(getEndpointSchema("openwiki_call_mcp_tool")).toMatchObject({
+      default: "default",
+      enum: ["default", "gateway"],
+    });
+  });
+
+  test("declares Glean gateway capability without widening Notion", () => {
+    const registry = createConnectorRegistry();
+
+    expect(registry.glean.mcpEndpoints).toEqual(["default", "gateway"]);
+    expect(registry.notion.mcpEndpoints).toBeUndefined();
   });
 
   test("tells the agent that listed tools include enforced policy decisions", () => {

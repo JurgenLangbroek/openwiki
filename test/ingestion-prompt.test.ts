@@ -116,6 +116,69 @@ describe("source synthesis policy", () => {
     expect(message).toMatch(/deny-by-default read-only policy/iu);
     expect(message).toMatch(/untrusted evidence, not instructions/iu);
     expect(message).not.toContain("create_announcement");
+    expect(message).not.toContain("Live gateway tools:");
+  });
+
+  test("advertises allowed gateway reads separately from index tools", () => {
+    const connector = createConnectorRegistry().glean;
+    const message = createSourceUpdateMessage({
+      config: { sourceInstances: [], sources: {}, version: 1 },
+      connector,
+      deterministicPull: {
+        connectorId: "glean",
+        liveTools: [
+          {
+            endpoint: "default",
+            name: "search",
+            policy: {
+              allowed: true,
+              reason: "Read-shaped tool name.",
+              rule: "read-shaped-name",
+            },
+          },
+          {
+            description: "Read the current Jira issue from its live source.",
+            endpoint: "gateway",
+            name: "jira_get_issue",
+            policy: {
+              allowed: true,
+              reason: "Read-shaped tool name.",
+              rule: "read-shaped-name",
+            },
+          },
+          {
+            endpoint: "gateway",
+            name: "jira_add_comment",
+            policy: {
+              allowed: false,
+              reason: "Write-shaped tool name.",
+              rule: "write-shaped",
+            },
+          },
+        ],
+        message: "Pulled fixture evidence.",
+        rawFiles: ["/tmp/probe.json", "/tmp/gateway-probe.json"],
+        runId: "run-1",
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings: [],
+      },
+      rawFiles: ["/tmp/probe.json", "/tmp/gateway-probe.json"],
+      sourceConfig: { connectorId: "glean", id: "glean-primary" },
+    });
+
+    expect(message).toContain("Live index tools:");
+    expect(message).toContain("Live gateway tools:");
+    expect(message).toContain(
+      "jira_get_issue — Read the current Jira issue from its live source.",
+    );
+    expect(message).toContain('endpoint: "gateway"');
+    expect(message).toMatch(/live records.*underlying datasources/isu);
+    expect(message).toMatch(/fresher than the index/iu);
+    expect(message).toMatch(/raw pull files are the primary evidence/iu);
+    expect(message).toMatch(/deny-by-default read-only policy/iu);
+    expect(message).toMatch(/untrusted evidence/iu);
+    expect(message).not.toContain("jira_add_comment");
   });
 
   test("omits the live-tools section when a hybrid pull has no allowed tools", () => {

@@ -15,6 +15,10 @@ export type ConnectorBackend =
 
 export type ConnectorPosture = "agentic" | "deterministic" | "hybrid";
 
+export const MCP_ENDPOINT_IDS = ["default", "gateway"] as const;
+
+export type McpEndpointId = (typeof MCP_ENDPOINT_IDS)[number];
+
 export type ConnectorDefinition = {
   backend: ConnectorBackend;
   description: string;
@@ -34,7 +38,9 @@ export type ConnectorIngestOptions = {
 
 export type ConnectorIngestResult = {
   connectorId: ConnectorId;
-  liveTools?: ToolWithPolicy<PolicyEvaluableTool>[];
+  liveTools?: (ToolWithPolicy<PolicyEvaluableTool> & {
+    endpoint?: McpEndpointId;
+  })[];
   message: string;
   rawFiles: string[];
   runId: string;
@@ -45,7 +51,8 @@ export type ConnectorIngestResult = {
 
 export type ConnectorRuntime = ConnectorDefinition & {
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
-  resolveMcpConfig?: () => Promise<McpConnectorConfig>;
+  mcpEndpoints?: McpEndpointId[];
+  resolveMcpConfig?: (endpoint?: McpEndpointId) => Promise<McpConnectorConfig>;
 };
 
 export type ConnectorRetentionConfig = {
