@@ -20,6 +20,7 @@ import {
   createGleanConnector,
   resolveGleanBackendUrl,
 } from "../src/connectors/sources/glean.ts";
+import { GleanBackendResolutionError } from "../src/connectors/sources/glean-backend.ts";
 import {
   CONNECTOR_IDS,
   createConnectorRegistry,
@@ -94,6 +95,22 @@ afterEach(async () => {
 });
 
 describe("resolveGleanBackendUrl", () => {
+  test.each([
+    ["bad backendBaseUrl", { backendBaseUrl: "not a URL" }],
+    ["bad instance label", { instance: "bad.instance" }],
+    ["unresolvable email", { email: "j@localhost" }],
+    ["empty input", {}],
+  ])("uses a typed error for %s", (_case, input) => {
+    let error: unknown;
+    try {
+      resolveGleanBackendUrl(input);
+    } catch (resolutionError) {
+      error = resolutionError;
+    }
+
+    expect(error).toBeInstanceOf(GleanBackendResolutionError);
+  });
+
   test("prefers and normalizes an explicit HTTPS backend URL", () => {
     expect(
       resolveGleanBackendUrl({

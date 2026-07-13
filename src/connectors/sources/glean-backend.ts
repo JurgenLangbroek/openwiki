@@ -23,6 +23,13 @@ export type GleanTargetConfig = GleanBackendInput & {
   mcpPath?: string;
 };
 
+export class GleanBackendResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GleanBackendResolutionError";
+  }
+}
+
 const COMMON_SECOND_LEVEL_PUBLIC_SUFFIX_LABELS = new Set([
   "ac",
   "co",
@@ -41,21 +48,27 @@ export function resolveGleanBackendUrl(input: GleanBackendInput): string {
     try {
       url = new URL(backendBaseUrl);
     } catch {
-      throw new Error("Glean backendBaseUrl must be a valid HTTPS URL.");
+      throw new GleanBackendResolutionError(
+        "Glean backendBaseUrl must be a valid HTTPS URL.",
+      );
     }
 
     if (url.protocol !== "https:") {
-      throw new Error("Glean backendBaseUrl must use HTTPS.");
+      throw new GleanBackendResolutionError(
+        "Glean backendBaseUrl must use HTTPS.",
+      );
     }
 
     if (url.username || url.password || url.search || url.hash) {
-      throw new Error(
+      throw new GleanBackendResolutionError(
         "Glean backendBaseUrl must not include credentials, query parameters, or a fragment.",
       );
     }
 
     if (url.pathname !== "/") {
-      throw new Error("Glean backendBaseUrl must be an HTTPS origin.");
+      throw new GleanBackendResolutionError(
+        "Glean backendBaseUrl must be an HTTPS origin.",
+      );
     }
 
     return url.origin;
@@ -71,7 +84,7 @@ export function resolveGleanBackendUrl(input: GleanBackendInput): string {
     return createGleanBackendUrl(emailInstance);
   }
 
-  throw new Error(
+  throw new GleanBackendResolutionError(
     "Cannot resolve the Glean backend. Set backendBaseUrl, instance, or email in the connector config, or OPENWIKI_GLEAN_BACKEND_URL, OPENWIKI_GLEAN_INSTANCE, or OPENWIKI_GLEAN_EMAIL.",
   );
 }
@@ -124,7 +137,7 @@ function createGleanBackendUrl(instance: string): string {
     normalized.length > 63 ||
     !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(normalized)
   ) {
-    throw new Error(
+    throw new GleanBackendResolutionError(
       "Glean instance must be a valid DNS label. Set a valid instance or backendBaseUrl.",
     );
   }
