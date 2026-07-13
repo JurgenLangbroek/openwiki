@@ -1,7 +1,15 @@
+import { createOpenWikiThreadId, runOpenWikiAgent } from "./agent/index.js";
+import type {
+  OpenWikiRunEvent,
+  OpenWikiRunOptions,
+  OpenWikiRunResult,
+} from "./agent/types.js";
+import { markRunSynthesized } from "./connectors/io.js";
 import {
   createConnectorRegistry,
   isConnectorId,
 } from "./connectors/registry.js";
+import { sweepAllConnectorRawRetention } from "./connectors/retention.js";
 import type {
   ConnectorId,
   ConnectorIngestResult,
@@ -18,12 +26,6 @@ import {
   getConnectorConfigPath,
   getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
-import { createOpenWikiThreadId, runOpenWikiAgent } from "./agent/index.js";
-import type {
-  OpenWikiRunEvent,
-  OpenWikiRunOptions,
-  OpenWikiRunResult,
-} from "./agent/types.js";
 
 const INGESTION_WINDOW_HOURS = 24;
 
@@ -92,6 +94,15 @@ export async function runOpenWikiIngestion(
         modelId: options.modelId,
         sourceConfig,
       }),
+    );
+  }
+
+  try {
+    await sweepAllConnectorRawRetention({ now: new Date() });
+  } catch (error) {
+    emitText(
+      options.onEvent,
+      `Connector raw retention sweep failed: ${getErrorMessage(error)}\n`,
     );
   }
 
@@ -180,6 +191,14 @@ async function runSourceIngestion({
         sourceConfig,
       }),
     });
+
+    if (deterministicPull?.runId && !agentResult.skipped) {
+      await markRunSynthesized(
+        connector.id,
+        deterministicPull.runId,
+        new Date().toISOString(),
+      );
+    }
 
     return {
       agentResult,

@@ -48,6 +48,27 @@ export async function readConnectorState(
   }
 }
 
+export async function markRunSynthesized(
+  connectorId: ConnectorId,
+  runId: string,
+  synthesizedAt: string,
+): Promise<void> {
+  const state = await readConnectorState(connectorId);
+  const runIndex = state.runs?.findIndex((run) => run.runId === runId) ?? -1;
+  const run = state.runs?.[runIndex];
+
+  if (runIndex < 0 || run === undefined || run.synthesizedAt !== undefined) {
+    return;
+  }
+
+  await writeConnectorState(connectorId, {
+    ...state,
+    runs: state.runs?.map((existingRun, index) =>
+      index === runIndex ? { ...existingRun, synthesizedAt } : existingRun,
+    ),
+  });
+}
+
 export async function writeConnectorState(
   connectorId: ConnectorId,
   state: ConnectorState,

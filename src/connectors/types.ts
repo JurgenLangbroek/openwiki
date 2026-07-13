@@ -42,6 +42,10 @@ export type ConnectorRuntime = ConnectorDefinition & {
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
 };
 
+export type ConnectorRetentionConfig = {
+  rawRetentionDays?: number;
+};
+
 export type ConnectorState = {
   lastRunAt?: string;
   latestIds?: Record<string, string>;
@@ -52,9 +56,11 @@ export type ConnectorState = {
 
 export type ConnectorRunSummary = {
   at: string;
+  rawDeletedAt?: string;
   rawFiles: string[];
   runId: string;
   status: ConnectorIngestResult["status"];
+  synthesizedAt?: string;
   warnings: string[];
 };
 
