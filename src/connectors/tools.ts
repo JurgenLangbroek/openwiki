@@ -23,7 +23,12 @@ import {
   getMcpConnectorIds,
   isMcpConnectorId,
 } from "./mcp-runtime.js";
-import type { ConnectorId, ConnectorIngestOptions } from "./types.js";
+import {
+  MCP_ENDPOINT_IDS,
+  type ConnectorId,
+  type ConnectorIngestOptions,
+  type McpEndpointId,
+} from "./types.js";
 
 export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
   const connectorIds = [...CONNECTOR_IDS].sort();
@@ -44,7 +49,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
     }),
     new DynamicStructuredTool({
       name: "openwiki_list_mcp_tools",
-      description: `List live MCP tools for a configured MCP connector and write discovery under ~/.openwiki/connectors/<id>/raw. Each tool includes a read-only policy decision with its allowed/denied status and reason; denied tools cannot be called. Input: ${JSON.stringify({ connectorId: mcpConnectorId })}. Use exact returned tool names.`,
+      description: `List live MCP tools for a configured MCP connector and endpoint, then write discovery under ~/.openwiki/connectors/<id>/raw and cache descriptors locally. The "default" endpoint reads the connector index. The "gateway" endpoint discovers Gateway Reads: read-only tools against live underlying datasources such as issue trackers, calendars, and wikis. Each tool includes a deny-by-default read-only policy decision; denied tools cannot be called. Input: ${JSON.stringify({ connectorId: mcpConnectorId, endpoint: "default" })}. Use exact returned tool names.`,
       schema: {
         type: "object",
         properties: {
@@ -52,18 +57,26 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
             type: "string",
             enum: mcpConnectorIds,
           },
+          endpoint: {
+            type: "string",
+            enum: MCP_ENDPOINT_IDS,
+            default: "default",
+          },
         },
         required: ["connectorId"],
         additionalProperties: false,
       } as const,
       func: async (input) =>
         stringifyToolResult(
-          await listMcpToolsForConnector(getConnectorId(input, "connectorId")),
+          await listMcpToolsForConnector(
+            getConnectorId(input, "connectorId"),
+            getMcpEndpointInput(input),
+          ),
         ),
     }),
     new DynamicStructuredTool({
       name: "openwiki_call_mcp_tool",
-      description: `Call one exact discovered MCP tool permitted by the deny-by-default read-only policy and write the result under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId, toolName: "exact_tool_name", args: { query: "Applied AI" } })}.`,
+      description: `Call one exact discovered MCP tool permitted by the deny-by-default read-only policy and write the result under ~/.openwiki/connectors/<id>/raw. The "default" endpoint is an Index Read. The "gateway" endpoint is a Gateway Read against a live underlying datasource such as an issue tracker, calendar, or wiki. Denied tools cannot be called on either endpoint. Input: ${JSON.stringify({ connectorId: mcpConnectorId, endpoint: "default", toolName: "exact_tool_name", args: { query: "Applied AI" } })}.`,
       schema: {
         type: "object",
         properties: {
@@ -74,6 +87,11 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
           connectorId: {
             type: "string",
             enum: mcpConnectorIds,
+          },
+          endpoint: {
+            type: "string",
+            enum: MCP_ENDPOINT_IDS,
+            default: "default",
           },
           toolName: {
             type: "string",
@@ -88,6 +106,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
             getConnectorId(input, "connectorId"),
             getStringInput(input, "toolName"),
             getRecordInput(input, "args") ?? {},
+            getMcpEndpointInput(input),
           ),
         ),
     }),
@@ -230,24 +249,46 @@ async function ingestConnector(
   return registry[connectorId].ingest(options);
 }
 
-async function listMcpToolsForConnector(connectorId: ConnectorId) {
+async function listMcpToolsForConnector(
+  connectorId: ConnectorId,
+  endpoint: McpEndpointId,
+) {
   if (!isMcpConnectorId(connectorId)) {
     throw new Error(`Connector ${connectorId} is not MCP-backed.`);
   }
 
-  return await discoverMcpConnectorTools(connectorId);
+  return await discoverMcpConnectorTools(connectorId, { endpoint });
 }
 
 async function callMcpToolForConnector(
   connectorId: ConnectorId,
   toolName: string,
   args: Record<string, unknown>,
+  endpoint: McpEndpointId,
 ) {
   if (!isMcpConnectorId(connectorId)) {
     throw new Error(`Connector ${connectorId} is not MCP-backed.`);
   }
 
-  return await callMcpConnectorTool(connectorId, toolName, args);
+  return await callMcpConnectorTool(connectorId, toolName, args, { endpoint });
+}
+
+function getMcpEndpointInput(input: unknown): McpEndpointId {
+  if (!isRecord(input) || input.endpoint === undefined) {
+    return "default";
+  }
+
+  if (!isMcpEndpointId(input.endpoint)) {
+    throw new Error(
+      `Expected MCP endpoint input: ${MCP_ENDPOINT_IDS.join(" or ")}`,
+    );
+  }
+
+  return input.endpoint;
+}
+
+function isMcpEndpointId(value: unknown): value is McpEndpointId {
+  return MCP_ENDPOINT_IDS.some((endpoint) => endpoint === value);
 }
 
 async function ingestAllConnectors() {

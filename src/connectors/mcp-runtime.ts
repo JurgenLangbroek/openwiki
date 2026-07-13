@@ -12,7 +12,16 @@ import {
   type McpToolDescriptor,
 } from "./mcp-client.js";
 import { sanitizeMcpTransport } from "./mcp-shared.js";
+import {
+  createGatewayUnavailableWarning,
+  isMcpEndpointUnavailableError,
+} from "./mcp-errors.js";
 import { createConnectorRegistry, type ConnectorRegistry } from "./registry.js";
+import {
+  isToolCatalogFresh,
+  readToolCatalog,
+  writeToolCatalog,
+} from "./tool-catalog.js";
 import {
   annotateToolsWithPolicy,
   evaluateToolPolicy,
@@ -22,22 +31,31 @@ import type {
   ConnectorId,
   ConnectorIngestResult,
   McpConnectorConfig,
+  McpEndpointId,
 } from "./types.js";
 
 export type McpToolDiscoveryResult = {
   connectorId: ConnectorId;
+  endpoint: McpEndpointId;
   rawFile: string;
   runId: string;
   tools: ToolWithPolicy<McpToolDescriptor>[];
+  warnings: string[];
 };
 
 export type McpToolCallResult = {
   allowedBy: string;
   connectorId: ConnectorId;
+  endpoint: McpEndpointId;
   rawFile: string;
   result: unknown;
   runId: string;
   toolName: string;
+};
+
+export type McpRuntimeOptions = {
+  endpoint?: McpEndpointId;
+  registry?: ConnectorRegistry;
 };
 
 export function getMcpConnectorIds(
@@ -62,16 +80,59 @@ export function isMcpConnectorId(
 
 export async function discoverMcpConnectorTools(
   connectorId: ConnectorId,
-  registry: ConnectorRegistry = createConnectorRegistry(),
+  options: McpRuntimeOptions = {},
 ): Promise<McpToolDiscoveryResult> {
+  const endpoint = options.endpoint ?? "default";
+  const registry = options.registry ?? createConnectorRegistry();
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId, registry);
-  const discovery = await listMcpTools(config);
-  const tools = annotateToolsWithPolicy(discovery.tools, config.allowedTools);
+  const config = await readMcpConnectorConfig(connectorId, endpoint, registry);
+  let discovery: Awaited<ReturnType<typeof listMcpTools>>;
+  try {
+    discovery = await listMcpTools(config);
+  } catch (error) {
+    if (endpoint !== "gateway" || !isMcpEndpointUnavailableError(error)) {
+      throw error;
+    }
+
+    const warnings = [
+      createGatewayUnavailableWarning(registry[connectorId].displayName),
+    ];
+    const rawFile = await writeRawJson(connectorId, runId, "mcp-tools.json", {
+      connectorId,
+      endpoint,
+      generatedAt: new Date().toISOString(),
+      tools: [],
+      transport: sanitizeMcpTransport(config.transport),
+      warnings,
+    });
+    await recordMcpRun(connectorId, state, {
+      rawFiles: [rawFile],
+      runId,
+      status: "skipped",
+      warnings,
+    });
+
+    return { connectorId, endpoint, rawFile, runId, tools: [], warnings };
+  }
+
+  const tools = annotateToolsWithPolicy(
+    discovery.tools,
+    config.allowedTools,
+    endpoint,
+  );
+  const generatedAt = new Date().toISOString();
+  await writeToolCatalog({
+    config,
+    connectorId,
+    endpoint,
+    generatedAt,
+    tools,
+  });
   const rawFile = await writeRawJson(connectorId, runId, "mcp-tools.json", {
     connectorId,
-    generatedAt: new Date().toISOString(),
+    endpoint,
+    generatedAt,
     note: "Live MCP tools/list discovery with read-only policy decisions. Tool names must be used exactly as returned; denied tools are not callable.",
     tools,
     transport: sanitizeMcpTransport(config.transport),
@@ -86,9 +147,11 @@ export async function discoverMcpConnectorTools(
 
   return {
     connectorId,
+    endpoint,
     rawFile,
     runId,
     tools,
+    warnings: [],
   };
 }
 
@@ -96,22 +159,39 @@ export async function callMcpConnectorTool(
   connectorId: ConnectorId,
   toolName: string,
   args: Record<string, unknown>,
-  registry: ConnectorRegistry = createConnectorRegistry(),
+  options: McpRuntimeOptions = {},
 ): Promise<McpToolCallResult> {
+  const endpoint = options.endpoint ?? "default";
+  const registry = options.registry ?? createConnectorRegistry();
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId, registry);
-  const discovery = await listMcpTools(config);
-  const tool = discovery.tools.find((candidate) => candidate.name === toolName);
+  const config = await readMcpConnectorConfig(connectorId, endpoint, registry);
+  const catalog = await readToolCatalog(connectorId, endpoint);
+  let tool =
+    catalog && isToolCatalogFresh(catalog)
+      ? catalog.tools.find((candidate) => candidate.name === toolName)
+      : undefined;
+
+  if (!tool) {
+    const discovery = await listMcpTools(config);
+    const tools = annotateToolsWithPolicy(
+      discovery.tools,
+      config.allowedTools,
+      endpoint,
+    );
+    await writeToolCatalog({ config, connectorId, endpoint, tools });
+    tool = tools.find((candidate) => candidate.name === toolName);
+  }
 
   if (!tool) {
     throw new Error(
-      `MCP tool ${toolName} was not returned by tools/list for ${connectorId}. Run openwiki_list_mcp_tools first and use an exact discovered name.`,
+      `MCP tool ${toolName} was not returned by tools/list for ${connectorId} endpoint ${endpoint}. Run openwiki_list_mcp_tools first and use an exact discovered name.`,
     );
   }
 
   const policy = evaluateToolPolicy({
     allowedTools: config.allowedTools,
+    endpoint,
     tool,
   });
   if (!policy.allowed) {
@@ -126,6 +206,7 @@ export async function callMcpConnectorTool(
     {
       args: sanitizeValue(args),
       connectorId,
+      endpoint,
       generatedAt: new Date().toISOString(),
       result,
       tool,
@@ -144,6 +225,7 @@ export async function callMcpConnectorTool(
   return {
     allowedBy: policy.reason,
     connectorId,
+    endpoint,
     rawFile,
     result,
     runId,
@@ -153,11 +235,18 @@ export async function callMcpConnectorTool(
 
 async function readMcpConnectorConfig(
   connectorId: ConnectorId,
+  endpoint: McpEndpointId,
   registry: ConnectorRegistry,
 ): Promise<McpConnectorConfig> {
   const connector = registry[connectorId];
+  const availableEndpoints = connector.mcpEndpoints ?? ["default"];
+  if (!availableEndpoints.includes(endpoint)) {
+    throw new Error(
+      `Connector ${connectorId} does not expose MCP endpoint ${endpoint}; available endpoints: ${availableEndpoints.join(", ")}. Choose an available endpoint and retry.`,
+    );
+  }
   const config = connector.resolveMcpConfig
-    ? await connector.resolveMcpConfig()
+    ? await connector.resolveMcpConfig(endpoint)
     : await readConnectorConfig<McpConnectorConfig>(connectorId, {
         enabled: false,
         readOnlyOperations: [],

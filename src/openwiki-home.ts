@@ -37,6 +37,17 @@ export function getConnectorRawDir(connectorId: string): string {
   return path.join(getConnectorDir(connectorId), "raw");
 }
 
+export function getConnectorToolsDir(connectorId: string): string {
+  return path.join(getConnectorDir(connectorId), "tools");
+}
+
+export function getConnectorToolCatalogPath(
+  connectorId: string,
+  endpoint: string,
+): string {
+  return path.join(getConnectorToolsDir(connectorId), `${endpoint}.json`);
+}
+
 export function getConnectorLogsDir(connectorId: string): string {
   return path.join(getConnectorDir(connectorId), "logs");
 }

@@ -1,3 +1,5 @@
+import type { McpEndpointId } from "./types.js";
+
 export type ToolPolicyRule =
   | "allowlist"
   | "deny-by-default"
@@ -28,8 +30,23 @@ const READ_WORD_PATTERN =
 
 export function evaluateToolPolicy(input: {
   allowedTools?: string[];
+  endpoint?: McpEndpointId;
   tool: PolicyEvaluableTool;
 }): ToolPolicyDecision {
+  const normalizedToolText = normalizeToolText(
+    `${input.tool.name} ${input.tool.description ?? ""}`,
+  );
+  if (
+    input.endpoint === "gateway" &&
+    MUTATING_WORD_PATTERN.test(normalizedToolText)
+  ) {
+    return {
+      allowed: false,
+      reason: `MCP tool ${input.tool.name} is write-shaped. Write-shaped gateway tools are never callable; allowedTools cannot override this denial under the read-only-observer policy.`,
+      rule: "write-shaped",
+    };
+  }
+
   if (input.allowedTools?.includes(input.tool.name)) {
     return {
       allowed: true,
@@ -38,9 +55,6 @@ export function evaluateToolPolicy(input: {
     };
   }
 
-  const normalizedToolText = normalizeToolText(
-    `${input.tool.name} ${input.tool.description ?? ""}`,
-  );
   if (MUTATING_WORD_PATTERN.test(normalizedToolText)) {
     return {
       allowed: false,
@@ -75,10 +89,11 @@ export function evaluateToolPolicy(input: {
 export function annotateToolsWithPolicy<T extends PolicyEvaluableTool>(
   tools: T[],
   allowedTools?: string[],
+  endpoint?: McpEndpointId,
 ): ToolWithPolicy<T>[] {
   return tools.map((tool) => ({
     ...tool,
-    policy: evaluateToolPolicy({ allowedTools, tool }),
+    policy: evaluateToolPolicy({ allowedTools, endpoint, tool }),
   }));
 }
 

@@ -161,6 +161,35 @@ describe("MCP tool policy", () => {
     });
   });
 
+  test("denies an allowlisted write-shaped gateway tool", () => {
+    const decision = evaluateToolPolicy({
+      allowedTools: ["jira_add_comment"],
+      endpoint: "gateway",
+      tool: { name: "jira_add_comment" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      rule: "write-shaped",
+    });
+    expect(decision.reason).toMatch(
+      /write-shaped gateway tools.*never callable.*allowedTools.*cannot override.*read-only-observer policy/iu,
+    );
+  });
+
+  test("allows an allowlisted neutral-shaped gateway tool", () => {
+    expect(
+      evaluateToolPolicy({
+        allowedTools: ["tenant_catalog"],
+        endpoint: "gateway",
+        tool: { name: "tenant_catalog" },
+      }),
+    ).toMatchObject({
+      allowed: true,
+      rule: "allowlist",
+    });
+  });
+
   test.each(["yes", 1])(
     "does not grant access for non-boolean readOnlyHint %j",
     (readOnlyHint) => {
