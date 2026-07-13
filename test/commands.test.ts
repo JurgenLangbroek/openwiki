@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { parseCommand, shouldRunNonInteractively } from "../src/commands.ts";
+import {
+  helpContent,
+  parseCommand,
+  shouldRunNonInteractively,
+} from "../src/commands.ts";
 
 // parseCommand's --dry-run gate consults isDevelopmentMode(), which reads
 // NODE_ENV / OPENWIKI_DEV. Pin both to a non-development state per test and
@@ -321,5 +325,79 @@ describe("parseCommand — cron", () => {
   test("cron pause with extra arguments is an error", () => {
     const result = parseCommand(["cron", "pause", "all", "extra"]);
     expect(result.kind).toBe("error");
+  });
+});
+
+describe("parseCommand — explore", () => {
+  test("defaults to all configured explorable sources", () => {
+    expect(parseCommand(["explore"])).toEqual({
+      exitCode: 0,
+      kind: "explore",
+      modelId: null,
+      print: false,
+      scheduledOnly: false,
+      target: "all",
+    });
+  });
+
+  test("accepts connector and source-instance targets", () => {
+    expect(parseCommand(["explore", "glean"])).toMatchObject({
+      kind: "explore",
+      target: "glean",
+    });
+    expect(parseCommand(["explore", "glean-primary"])).toMatchObject({
+      kind: "explore",
+      target: { id: "glean-primary", kind: "source-instance" },
+    });
+  });
+
+  test("accepts print, scheduled, and both model ID forms", () => {
+    expect(
+      parseCommand([
+        "explore",
+        "all",
+        "-p",
+        "--scheduled",
+        "--modelId",
+        "gpt-5.5",
+      ]),
+    ).toMatchObject({
+      kind: "explore",
+      modelId: "gpt-5.5",
+      print: true,
+      scheduledOnly: true,
+    });
+    expect(
+      parseCommand(["explore", "all", "--model-id=claude-opus-4-8"]),
+    ).toMatchObject({
+      kind: "explore",
+      modelId: "claude-opus-4-8",
+    });
+  });
+
+  test("rejects invalid targets and unknown options with explore-specific errors", () => {
+    const invalidTarget = parseCommand(["explore", "not/a/target"]);
+    expect(invalidTarget.kind).toBe("error");
+    if (invalidTarget.kind === "error") {
+      expect(invalidTarget.message).toMatch(/Usage: openwiki explore/u);
+    }
+    expect(parseCommand(["explore", "all", "--nope"])).toEqual({
+      exitCode: 1,
+      kind: "error",
+      message: "Unknown option for explore: --nope",
+    });
+  });
+
+  test("lists exploration in help", () => {
+    expect(helpContent.usage).toContain(
+      "openwiki explore <source|source-instance|all>",
+    );
+    expect(
+      helpContent.commands.some(
+        ({ description, label }) =>
+          label.includes("explore") &&
+          description.includes("open-questions queue"),
+      ),
+    ).toBe(true);
   });
 });

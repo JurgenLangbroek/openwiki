@@ -104,89 +104,65 @@ export function createGleanConnector(overrides?: {
 }): ConnectorRuntime {
   return {
     ...definition,
-    mcpEndpoints: ["default", "gateway"],
-    ingest: async (): Promise<ConnectorIngestResult> => {
-      const runId = createRunId();
-      const config = await readConnectorConfig<GleanConfig>(
+    discoverLiveTools: async (): Promise<ConnectorIngestResult> => {
+      const preparation = await prepareGleanLiveTools(overrides?.transport);
+      if (preparation.kind === "result") {
+        return preparation.result;
+      }
+
+      const {
+        fetchedAt,
+        liveTools,
+        rawFiles,
+        runId,
+        target,
+        toolCount,
+        warnings,
+      } = preparation;
+      const state = await readConnectorState("glean");
+      await writeConnectorState(
         "glean",
-        DEFAULT_GLEAN_CONFIG,
-      );
-      const transport =
-        overrides?.transport ?? createDefaultTransport(config.messagingApps);
-
-      if (config.enabled !== true) {
-        return createEmptyResult(runId, "skipped", GLEAN_DISABLED_MESSAGE);
-      }
-
-      let target: Awaited<ReturnType<typeof resolveGleanTarget>>;
-      try {
-        target = await resolveGleanTarget(config);
-      } catch (error) {
-        return createEmptyResult(
-          runId,
-          "error",
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-
-      if (
-        !process.env[OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY] &&
-        !process.env[OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY]
-      ) {
-        return createEmptyResult(
-          runId,
-          "error",
-          "Glean credentials are missing. Run openwiki auth glean to sign in.",
-        );
-      }
-
-      const liveTools: NonNullable<ConnectorIngestResult["liveTools"]> = [];
-      const rawFiles: string[] = [];
-      let defaultProbe: GleanEndpointProbeResult;
-      try {
-        defaultProbe = await probeGleanEndpoint({
-          allowedTools: config.allowedTools,
-          backendUrl: target.backendUrl,
-          endpoint: "default",
-          liveTools,
-          mcpUrl: target.mcpUrl,
+        updateStateWithRun(state, {
+          at: fetchedAt,
           rawFiles,
           runId,
-          transport,
-        });
-      } catch {
-        return createEmptyResult(
-          runId,
-          "error",
-          "Glean MCP probe failed. Run openwiki auth glean to sign in again, then retry.",
-        );
+          status: "success",
+          warnings,
+        }),
+      );
+
+      return {
+        connectorId: "glean",
+        liveTools,
+        message: `Probed ${toolCount} MCP tool(s) at ${target.backendUrl}.`,
+        rawFiles,
+        runId,
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings,
+      };
+    },
+    mcpEndpoints: ["default", "gateway"],
+    ingest: async (): Promise<ConnectorIngestResult> => {
+      const preparation = await prepareGleanLiveTools(overrides?.transport);
+      if (preparation.kind === "result") {
+        return preparation.result;
       }
 
-      const { fetchedAt, tools } = defaultProbe;
+      const {
+        config,
+        fetchedAt,
+        liveTools,
+        rawFiles,
+        runId,
+        target,
+        toolCount,
+        transport,
+        warnings,
+      } = preparation;
       const windowHours = normalizeWindowHours(config.windowHours);
       const sinceDate = calculateSinceDate(fetchedAt, windowHours);
       let state = await readConnectorState("glean");
-      const warnings: string[] = [];
-
-      try {
-        await probeGleanEndpoint({
-          allowedTools: config.allowedTools,
-          backendUrl: target.backendUrl,
-          endpoint: "gateway",
-          fetchedAt,
-          liveTools,
-          mcpUrl: target.gatewayUrl,
-          rawFiles,
-          runId,
-          transport,
-        });
-      } catch (error) {
-        warnings.push(
-          isMcpEndpointUnavailableError(error)
-            ? createGatewayUnavailableWarning(definition.displayName)
-            : `Glean gateway probe failed: ${readErrorReason(error)}; gateway reads are disabled for this run.`,
-        );
-      }
 
       const summaries: string[] = [];
       const pulledStreams: PulledEvidenceStream[] = [];
@@ -328,7 +304,7 @@ export function createGleanConnector(overrides?: {
         ...(status === "success" ? { liveTools } : {}),
         message:
           status === "success"
-            ? `Probed ${tools.length} MCP tool(s) at ${target.backendUrl}; pulled ${summaries.join(", ")}.`
+            ? `Probed ${toolCount} MCP tool(s) at ${target.backendUrl}; pulled ${summaries.join(", ")}.`
             : "All Glean evidence streams failed. Run openwiki auth glean to sign in again, then retry.",
         rawFiles,
         runId,
@@ -338,6 +314,129 @@ export function createGleanConnector(overrides?: {
       };
     },
     resolveMcpConfig: resolveGleanMcpConfig,
+  };
+}
+
+type GleanLiveToolsPreparation =
+  | { kind: "result"; result: ConnectorIngestResult }
+  | {
+      config: GleanConfig;
+      fetchedAt: string;
+      kind: "ready";
+      liveTools: NonNullable<ConnectorIngestResult["liveTools"]>;
+      rawFiles: string[];
+      runId: string;
+      target: Awaited<ReturnType<typeof resolveGleanTarget>>;
+      toolCount: number;
+      transport: GleanProbeTransport;
+      warnings: string[];
+    };
+
+async function prepareGleanLiveTools(
+  transportOverride?: GleanProbeTransport,
+): Promise<GleanLiveToolsPreparation> {
+  const runId = createRunId();
+  const config = await readConnectorConfig<GleanConfig>(
+    "glean",
+    DEFAULT_GLEAN_CONFIG,
+  );
+  const transport =
+    transportOverride ?? createDefaultTransport(config.messagingApps);
+
+  if (config.enabled !== true) {
+    return {
+      kind: "result",
+      result: createEmptyResult(runId, "skipped", GLEAN_DISABLED_MESSAGE),
+    };
+  }
+
+  let target: Awaited<ReturnType<typeof resolveGleanTarget>>;
+  try {
+    target = await resolveGleanTarget(config);
+  } catch (error) {
+    return {
+      kind: "result",
+      result: createEmptyResult(
+        runId,
+        "error",
+        error instanceof Error ? error.message : String(error),
+      ),
+    };
+  }
+
+  if (
+    !process.env[OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY] &&
+    !process.env[OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY]
+  ) {
+    return {
+      kind: "result",
+      result: createEmptyResult(
+        runId,
+        "error",
+        "Glean credentials are missing. Run openwiki auth glean to sign in.",
+      ),
+    };
+  }
+
+  const liveTools: NonNullable<ConnectorIngestResult["liveTools"]> = [];
+  const rawFiles: string[] = [];
+  let defaultProbe: GleanEndpointProbeResult;
+  try {
+    defaultProbe = await probeGleanEndpoint({
+      allowedTools: config.allowedTools,
+      backendUrl: target.backendUrl,
+      endpoint: "default",
+      liveTools,
+      mcpUrl: target.mcpUrl,
+      rawFiles,
+      runId,
+      transport,
+    });
+  } catch {
+    return {
+      kind: "result",
+      result: createEmptyResult(
+        runId,
+        "error",
+        "Glean MCP probe failed. Run openwiki auth glean to sign in again, then retry.",
+      ),
+    };
+  }
+
+  const warnings: string[] = [];
+  let gatewayToolCount = 0;
+  try {
+    const gatewayProbe = await probeGleanEndpoint({
+      allowedTools: config.allowedTools,
+      backendUrl: target.backendUrl,
+      endpoint: "gateway",
+      fetchedAt: defaultProbe.fetchedAt,
+      liveTools,
+      mcpUrl: target.gatewayUrl,
+      rawFiles,
+      runId,
+      transport,
+    });
+    gatewayToolCount = gatewayProbe.tools.length;
+  } catch (error) {
+    warnings.push(
+      isMcpEndpointUnavailableError(error)
+        ? createGatewayUnavailableWarning(definition.displayName)
+        : `Glean gateway probe failed: ${readErrorReason(error)}; gateway reads are disabled for this run.`,
+    );
+  }
+
+  return {
+    config,
+    fetchedAt: defaultProbe.fetchedAt,
+    kind: "ready",
+    liveTools,
+    rawFiles,
+    runId,
+    target,
+    toolCount: defaultProbe.tools.length + gatewayToolCount,
+    transport,
+    warnings,
   };
 }
 

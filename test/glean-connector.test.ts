@@ -611,9 +611,13 @@ describe("Glean connector", () => {
       transport: {
         ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.resolve({ items: [] }),
-        listTools: ({ mcpUrl }) => {
+        listTools: ({ endpoint, mcpUrl }) => {
           probedUrls.push(mcpUrl);
-          return Promise.resolve([]);
+          return Promise.resolve(
+            endpoint === "gateway"
+              ? [{ name: "jira_get_issue" }]
+              : [{ name: "search" }, { name: "chat" }],
+          );
         },
       },
     });
@@ -621,6 +625,7 @@ describe("Glean connector", () => {
     const result = await connector.ingest();
 
     expect(result.status).toBe("success");
+    expect(result.message).toMatch(/^Probed 3 MCP tool\(s\)/u);
     expect(probedUrls).toEqual([
       "https://acme-be.glean.com/mcp/default",
       "https://acme-be.glean.com/mcp/gateway/proxy",
@@ -1706,6 +1711,123 @@ describe("Glean connector", () => {
       status: "success",
       warnings: result.warnings,
     });
+  });
+});
+
+describe("Glean live-tool discovery", () => {
+  test("probes both endpoints, records the run, and writes no evidence streams", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        listTools: ({ endpoint }) =>
+          endpoint === "gateway"
+            ? Promise.resolve([
+                {
+                  annotations: { readOnlyHint: true },
+                  description: "Read a Jira issue",
+                  name: "jira_get_issue",
+                },
+              ])
+            : Promise.resolve([
+                { description: "Search tenant content", name: "search" },
+                { description: "Create content", name: "create_content" },
+              ]),
+      },
+    });
+
+    const result = await connector.discoverLiveTools?.();
+
+    if (!result) {
+      throw new Error("Expected Glean to support live-tool discovery.");
+    }
+    expect(result).toMatchObject({
+      connectorId: "glean",
+      message: "Probed 3 MCP tool(s) at https://acme-be.glean.com.",
+      status: "success",
+      warnings: [],
+    });
+    expect(
+      result?.liveTools?.map(({ endpoint, name, policy }) => ({
+        allowed: policy.allowed,
+        endpoint,
+        name,
+      })),
+    ).toEqual([
+      { allowed: true, endpoint: "default", name: "search" },
+      { allowed: false, endpoint: "default", name: "create_content" },
+      { allowed: true, endpoint: "gateway", name: "jira_get_issue" },
+    ]);
+    expect(result?.rawFiles.map((file) => path.basename(file))).toEqual([
+      "probe.json",
+      "gateway-probe.json",
+    ]);
+    const firstRawFile = result.rawFiles[0];
+    if (!firstRawFile) {
+      throw new Error("Expected the default probe artifact.");
+    }
+    const runDir = path.dirname(firstRawFile);
+    expect((await readdir(runDir)).sort()).toEqual([
+      "gateway-probe.json",
+      "probe.json",
+    ]);
+
+    const state = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as {
+      runs: { rawFiles: string[]; runId: string; status: string }[];
+      seenIds?: Record<string, string[]>;
+    };
+    expect(state.seenIds).toBeUndefined();
+    expect(state.runs[0]).toMatchObject({
+      rawFiles: result?.rawFiles,
+      runId: result?.runId,
+      status: "success",
+    });
+  });
+
+  test("degrades a gateway probe failure to a successful warning", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        listTools: ({ endpoint }) =>
+          endpoint === "gateway"
+            ? Promise.reject(new Error("gateway unavailable"))
+            : Promise.resolve([{ name: "search" }]),
+      },
+    });
+
+    const result = await connector.discoverLiveTools?.();
+
+    expect(result?.status).toBe("success");
+    expect(result?.warnings).toEqual([
+      expect.stringMatching(
+        /gateway probe failed.*gateway reads are disabled/iu,
+      ),
+    ]);
+    expect(result?.liveTools?.map(({ name }) => name)).toEqual(["search"]);
+    expect(result?.rawFiles.map((file) => path.basename(file))).toEqual([
+      "probe.json",
+    ]);
+  });
+
+  test("uses the same disabled and missing-credential checks as ingestion", async () => {
+    await writeGleanConfig({ enabled: false, instance: "acme" });
+    const disabled = await createGleanConnector().discoverLiveTools?.();
+    expect(disabled?.status).toBe("skipped");
+    expect(disabled?.message).toMatch(/openwiki auth glean|enabled: true/iu);
+
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    const missingCredentials =
+      await createGleanConnector().discoverLiveTools?.();
+    expect(missingCredentials?.status).toBe("error");
+    expect(missingCredentials?.message).toMatch(/openwiki auth glean/iu);
   });
 });
 

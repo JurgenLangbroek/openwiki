@@ -43,6 +43,7 @@ import {
 import type { AuthProviderId } from "./auth/types.js";
 import type { OpenWikiRunMode } from "./commands.js";
 import type { ConnectorId } from "./connectors/types.js";
+import { configHasExplorableSource } from "./exploration-eligibility.js";
 import { getConnectorConfigPath } from "./openwiki-home.js";
 import { getOpenWikiEnvPath, saveOpenWikiEnv } from "./env.js";
 import {
@@ -58,9 +59,11 @@ import {
   type OpenWikiOnboardingConfig,
 } from "./onboarding.js";
 import {
+  DEFAULT_EXPLORATION_CRON,
   getSuggestedCronExpression,
-  installOpenWikiPowerSchedule,
   installConnectorSchedule,
+  installExplorationSchedule,
+  installOpenWikiPowerSchedule,
   validateCronExpression,
 } from "./schedules.js";
 
@@ -1813,12 +1816,31 @@ export function InitSetup({
 
     try {
       const result = await installConnectorSchedule({
-        connectorId: "git-repo",
         cronExpression,
         cwd: process.cwd(),
       });
+      let explorationResult:
+        Awaited<ReturnType<typeof installExplorationSchedule>> | undefined;
+      if (
+        configHasExplorableSource(onboardingConfig) &&
+        !onboardingConfig.explorationSchedule
+      ) {
+        explorationResult = await installExplorationSchedule({
+          cronExpression: DEFAULT_EXPLORATION_CRON,
+          cwd: process.cwd(),
+        });
+      }
       const nextConfig: OpenWikiOnboardingConfig = {
         ...onboardingConfig,
+        explorationSchedule: explorationResult
+          ? {
+              description: explorationResult.description,
+              expression: explorationResult.expression,
+              launchAgentPath: explorationResult.launchAgentPath,
+              updatedAt: new Date().toISOString(),
+              warning: explorationResult.warning,
+            }
+          : onboardingConfig.explorationSchedule,
         ingestionSchedule: {
           description: result.description,
           expression: result.expression,
@@ -1830,7 +1852,10 @@ export function InitSetup({
       await saveConfig(nextConfig);
       setSourceState((state) => ({
         ...state,
-        savedScheduleWarning: result.warning,
+        savedScheduleWarning:
+          [result.warning, explorationResult?.warning]
+            .filter((warning): warning is string => Boolean(warning))
+            .join(" ") || undefined,
       }));
       setPowerModeSelectionIndex(0);
       setStep("global-power-mode");

@@ -49,6 +49,7 @@ export type OpenWikiPowerManagementConfig = {
 
 export type OpenWikiOnboardingConfig = {
   completedAt?: string;
+  explorationSchedule?: OnboardingSourceScheduleConfig;
   ingestionSchedule?: OnboardingSourceScheduleConfig;
   modeId?: string;
   modeName?: string;
@@ -281,6 +282,12 @@ function normalizeOnboardingConfig(value: unknown): OpenWikiOnboardingConfig {
   if (isObject(value.ingestionSchedule)) {
     config.ingestionSchedule = normalizeSourceScheduleConfig(
       value.ingestionSchedule,
+    );
+  }
+
+  if (isObject(value.explorationSchedule)) {
+    config.explorationSchedule = normalizeSourceScheduleConfig(
+      value.explorationSchedule,
     );
   }
 
