@@ -205,11 +205,11 @@ async function listConnectors() {
       description: connector.description,
       displayName: connector.displayName,
       id: connector.id,
+      posture: connector.posture,
       rawDir: getConnectorRawDir(connector.id),
       readyForIngestion: configExists && allRequiredEnvSet,
       requiredEnv: connector.requiredEnv,
       requiredEnvStatus,
-      supportsAgenticDiscovery: connector.supportsAgenticDiscovery,
     });
   }
 

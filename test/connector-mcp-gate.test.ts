@@ -32,13 +32,14 @@ function getConnectorTool(toolName: string) {
 }
 
 describe("MCP connector eligibility", () => {
-  test("recognizes only the registered MCP connector", () => {
+  test("recognizes registered MCP and hybrid-capability connectors", () => {
+    expect(isMcpConnectorId("glean")).toBe(true);
     expect(isMcpConnectorId("notion")).toBe(true);
     expect(isMcpConnectorId("slack")).toBe(false);
   });
 
   test("lists MCP connectors from the real registry", () => {
-    expect(getMcpConnectorIds()).toEqual(["notion"]);
+    expect(getMcpConnectorIds()).toEqual(["glean", "notion"]);
   });
 
   test("makes an additional registry MCP connector eligible without gate edits", () => {
@@ -52,10 +53,35 @@ describe("MCP connector eligibility", () => {
     };
 
     expect(getMcpConnectorIds(registryWithSlackMcp)).toEqual([
+      "glean",
       "notion",
       "slack",
     ]);
     expect(isMcpConnectorId("slack", registryWithSlackMcp)).toBe(true);
+  });
+
+  test("makes a non-MCP backend eligible through its runtime capability", () => {
+    const registry = createConnectorRegistry();
+    const registryWithSlackCapability = {
+      ...registry,
+      slack: {
+        ...registry.slack,
+        resolveMcpConfig: () =>
+          Promise.resolve({
+            enabled: true,
+            transport: {
+              type: "http" as const,
+              url: "https://example.test/mcp",
+            },
+          }),
+      },
+    };
+
+    expect(getMcpConnectorIds(registryWithSlackCapability)).toEqual([
+      "glean",
+      "notion",
+      "slack",
+    ]);
   });
 
   test("publishes registry-derived connector IDs in tool schemas", () => {

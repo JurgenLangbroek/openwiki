@@ -46,7 +46,9 @@ export function getMcpConnectorIds(
   return Object.values(registry)
     .filter(
       (connector) =>
-        connector.backend === "mcp-http" || connector.backend === "mcp-stdio",
+        connector.backend === "mcp-http" ||
+        connector.backend === "mcp-stdio" ||
+        connector.resolveMcpConfig !== undefined,
     )
     .map((connector) => connector.id);
 }
@@ -60,10 +62,11 @@ export function isMcpConnectorId(
 
 export async function discoverMcpConnectorTools(
   connectorId: ConnectorId,
+  registry: ConnectorRegistry = createConnectorRegistry(),
 ): Promise<McpToolDiscoveryResult> {
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId);
+  const config = await readMcpConnectorConfig(connectorId, registry);
   const discovery = await listMcpTools(config);
   const tools = annotateToolsWithPolicy(discovery.tools, config.allowedTools);
   const rawFile = await writeRawJson(connectorId, runId, "mcp-tools.json", {
@@ -93,10 +96,11 @@ export async function callMcpConnectorTool(
   connectorId: ConnectorId,
   toolName: string,
   args: Record<string, unknown>,
+  registry: ConnectorRegistry = createConnectorRegistry(),
 ): Promise<McpToolCallResult> {
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId);
+  const config = await readMcpConnectorConfig(connectorId, registry);
   const discovery = await listMcpTools(config);
   const tool = discovery.tools.find((candidate) => candidate.name === toolName);
 
@@ -149,11 +153,15 @@ export async function callMcpConnectorTool(
 
 async function readMcpConnectorConfig(
   connectorId: ConnectorId,
+  registry: ConnectorRegistry,
 ): Promise<McpConnectorConfig> {
-  const config = await readConnectorConfig<McpConnectorConfig>(connectorId, {
-    enabled: false,
-    readOnlyOperations: [],
-  });
+  const connector = registry[connectorId];
+  const config = connector.resolveMcpConfig
+    ? await connector.resolveMcpConfig()
+    : await readConnectorConfig<McpConnectorConfig>(connectorId, {
+        enabled: false,
+        readOnlyOperations: [],
+      });
 
   if (!config.enabled) {
     throw new Error(`${connectorId} MCP connector is not enabled.`);

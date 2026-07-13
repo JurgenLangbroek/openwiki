@@ -465,8 +465,8 @@ describe("raw connector retention", () => {
         status: "success",
         warnings: [],
       }),
+      posture: "deterministic",
       requiredEnv: [],
-      supportsAgenticDiscovery: false,
     };
     const runOpenWikiAgent = vi.fn().mockResolvedValue({});
     vi.doMock("../src/agent/index.ts", () => ({
@@ -554,8 +554,8 @@ describe("raw connector retention", () => {
       displayName: "Git repository",
       id: "git-repo",
       ingest: vi.fn(),
+      posture: "agentic",
       requiredEnv: [],
-      supportsAgenticDiscovery: true,
     };
     const runOpenWikiAgent = vi.fn().mockResolvedValue({});
     vi.doMock("../src/agent/index.ts", () => ({

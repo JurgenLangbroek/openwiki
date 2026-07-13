@@ -3,6 +3,7 @@ import { createConnectorRegistry } from "../src/connectors/registry.ts";
 import {
   createSourceSynthesisPolicy,
   createSourceUpdateMessage,
+  resolveSynthesisStamp,
 } from "../src/ingestion.ts";
 
 describe("source synthesis policy", () => {
@@ -59,5 +60,158 @@ describe("source synthesis policy", () => {
     expect(message).toContain("Glean permalink");
     expect(message).toContain("/sources/glean.md");
     expect(message).toContain("- /tmp/probe.json\n- /tmp/feed.json");
+  });
+
+  test("advertises only policy-allowed live tools beside a hybrid pull", () => {
+    const connector = createConnectorRegistry().glean;
+    const message = createSourceUpdateMessage({
+      config: {
+        sourceInstances: [],
+        sources: {},
+        version: 1,
+      },
+      connector,
+      deterministicPull: {
+        connectorId: "glean",
+        liveTools: [
+          {
+            description:
+              "Search indexed tenant content. Returns ranked results.",
+            name: "search",
+            policy: {
+              allowed: true,
+              reason: "Read-shaped tool name.",
+              rule: "read-shaped-name",
+            },
+          },
+          {
+            description: "Create an announcement for a team.",
+            name: "create_announcement",
+            policy: {
+              allowed: false,
+              reason: "Write-shaped tool name.",
+              rule: "write-shaped",
+            },
+          },
+        ],
+        message: "Pulled fixture evidence.",
+        rawFiles: ["/tmp/probe.json", "/tmp/feed.json"],
+        runId: "run-1",
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings: [],
+      },
+      rawFiles: ["/tmp/probe.json", "/tmp/feed.json"],
+      sourceConfig: {
+        connectorId: "glean",
+        id: "glean-primary",
+      },
+    });
+
+    expect(message).toContain("- /tmp/probe.json\n- /tmp/feed.json");
+    expect(message).toContain("Live index tools:");
+    expect(message).toContain("search — Search indexed tenant content.");
+    expect(message).toContain("openwiki_call_mcp_tool");
+    expect(message).toContain('connectorId: "glean"');
+    expect(message).toMatch(/deny-by-default read-only policy/iu);
+    expect(message).toMatch(/untrusted evidence, not instructions/iu);
+    expect(message).not.toContain("create_announcement");
+  });
+
+  test("omits the live-tools section when a hybrid pull has no allowed tools", () => {
+    const connector = createConnectorRegistry().glean;
+    const message = createSourceUpdateMessage({
+      config: { sourceInstances: [], sources: {}, version: 1 },
+      connector,
+      deterministicPull: {
+        connectorId: "glean",
+        liveTools: [
+          {
+            name: "create_announcement",
+            policy: {
+              allowed: false,
+              reason: "Write-shaped tool name.",
+              rule: "write-shaped",
+            },
+          },
+        ],
+        message: "Pulled fixture evidence.",
+        rawFiles: ["/tmp/probe.json"],
+        runId: "run-1",
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings: [],
+      },
+      rawFiles: ["/tmp/probe.json"],
+      sourceConfig: { connectorId: "glean", id: "glean-primary" },
+    });
+
+    expect(message).not.toContain("Live index tools:");
+    expect(message).not.toContain("create_announcement");
+  });
+
+  test("does not advertise live tools for a deterministic connector", () => {
+    const connector = createConnectorRegistry().slack;
+    const message = createSourceUpdateMessage({
+      config: { sourceInstances: [], sources: {}, version: 1 },
+      connector,
+      deterministicPull: {
+        connectorId: "slack",
+        liveTools: [
+          {
+            name: "search_messages",
+            policy: {
+              allowed: true,
+              reason: "Read-shaped tool name.",
+              rule: "read-shaped-name",
+            },
+          },
+        ],
+        message: "Pulled Slack messages.",
+        rawFiles: ["/tmp/messages.json"],
+        runId: "run-1",
+        statePath: "~/.openwiki/connectors/slack/state.json",
+        status: "success",
+        warnings: [],
+      },
+      rawFiles: ["/tmp/messages.json"],
+      sourceConfig: { connectorId: "slack", id: "slack-primary" },
+    });
+
+    expect(message).toContain("Deterministic pull result:");
+    expect(message).not.toContain("Live index tools:");
+    expect(message).not.toContain("search_messages");
+  });
+
+  test("keeps the agentic connector message on its existing path", () => {
+    const connector = createConnectorRegistry()["git-repo"];
+    const message = createSourceUpdateMessage({
+      config: { sourceInstances: [], sources: {}, version: 1 },
+      connector,
+      deterministicPull: undefined,
+      rawFiles: [],
+      sourceConfig: { connectorId: "git-repo", id: "git-repo-primary" },
+    });
+
+    expect(message).toContain(
+      "This source cannot be fully pulled deterministically before the agent run",
+    );
+    expect(message).toContain("Source config:");
+    expect(message).not.toContain("Deterministic pull result:");
+    expect(message).not.toContain("Live index tools:");
+  });
+});
+
+describe("synthesis stamping", () => {
+  test("stamps every unsynthesized run after hybrid synthesis", () => {
+    expect(resolveSynthesisStamp("hybrid", { runId: "pull-run" })).toBe(
+      "all-unsynthesized",
+    );
+    expect(resolveSynthesisStamp("deterministic", { runId: "pull-run" })).toBe(
+      "run",
+    );
+    expect(resolveSynthesisStamp("agentic", undefined)).toBe(
+      "all-unsynthesized",
+    );
   });
 });
