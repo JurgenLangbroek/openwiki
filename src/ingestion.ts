@@ -32,6 +32,7 @@ import {
 } from "./openwiki-home.js";
 
 const INGESTION_WINDOW_HOURS = 24;
+const MAX_TOOL_DESCRIPTION_LENGTH = 140;
 
 export type IngestionTarget = ConnectorId | "all" | SourceInstanceTarget;
 
@@ -202,10 +203,10 @@ async function runSourceIngestion({
         connector.posture,
         deterministicPull,
       );
-      if (synthesisStamp === "run" && deterministicPull) {
+      if (synthesisStamp.kind === "run") {
         await markRunSynthesized(
           connector.id,
-          deterministicPull.runId,
+          synthesisStamp.runId,
           new Date().toISOString(),
         );
       } else {
@@ -285,10 +286,10 @@ function getSourceDisplayName(
 export function resolveSynthesisStamp(
   posture: ConnectorPosture,
   deterministicPull: Pick<ConnectorIngestResult, "runId"> | undefined,
-): "all-unsynthesized" | "run" {
+): { kind: "all-unsynthesized" } | { kind: "run"; runId: string } {
   return posture === "deterministic" && deterministicPull
-    ? "run"
-    : "all-unsynthesized";
+    ? { kind: "run", runId: deterministicPull.runId }
+    : { kind: "all-unsynthesized" };
 }
 
 export function createSourceUpdateMessage({
@@ -405,9 +406,9 @@ function shortenToolDescription(description: string): string {
   const firstSentence = normalized.match(/^.*?[.!?](?:\s|$)/u)?.[0]?.trim();
   const candidate = firstSentence ?? normalized;
 
-  return candidate.length <= 140
+  return candidate.length <= MAX_TOOL_DESCRIPTION_LENGTH
     ? candidate
-    : `${candidate.slice(0, 139).trimEnd()}…`;
+    : `${candidate.slice(0, MAX_TOOL_DESCRIPTION_LENGTH - 1).trimEnd()}…`;
 }
 
 export function createSourceSynthesisPolicy(connectorId: ConnectorId): string {

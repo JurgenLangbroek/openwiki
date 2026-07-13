@@ -1,4 +1,4 @@
-import type { ToolWithPolicy } from "./tool-policy.js";
+import type { PolicyEvaluableTool, ToolWithPolicy } from "./tool-policy.js";
 
 export type ConnectorId =
   | "git-repo"
@@ -34,11 +34,7 @@ export type ConnectorIngestOptions = {
 
 export type ConnectorIngestResult = {
   connectorId: ConnectorId;
-  liveTools?: ToolWithPolicy<{
-    annotations?: Record<string, unknown>;
-    description?: string;
-    name: string;
-  }>[];
+  liveTools?: ToolWithPolicy<PolicyEvaluableTool>[];
   message: string;
   rawFiles: string[];
   runId: string;

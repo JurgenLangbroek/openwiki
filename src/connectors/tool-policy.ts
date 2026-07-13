@@ -11,7 +11,7 @@ export type ToolPolicyDecision = {
   rule: ToolPolicyRule;
 };
 
-type PolicyEvaluableTool = {
+export type PolicyEvaluableTool = {
   annotations?: Record<string, unknown>;
   description?: string;
   name: string;

@@ -85,6 +85,8 @@ const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   messagingApps: ["slack"],
   windowHours: 48,
 };
+const GLEAN_DISABLED_MESSAGE =
+  "Glean connector is not enabled. Run openwiki auth glean or set enabled: true in ~/.openwiki/connectors/glean/config.json.";
 
 export function createGleanConnector(overrides?: {
   transport?: GleanProbeTransport;
@@ -101,11 +103,7 @@ export function createGleanConnector(overrides?: {
         overrides?.transport ?? createDefaultTransport(config.messagingApps);
 
       if (config.enabled !== true) {
-        return createEmptyResult(
-          runId,
-          "skipped",
-          "Glean connector is not enabled. Run openwiki auth glean or set enabled: true in ~/.openwiki/connectors/glean/config.json.",
-        );
+        return createEmptyResult(runId, "skipped", GLEAN_DISABLED_MESSAGE);
       }
 
       let target: Awaited<ReturnType<typeof resolveGleanTarget>>;
@@ -320,9 +318,7 @@ async function resolveGleanMcpConfig() {
   );
 
   if (config.enabled !== true) {
-    throw new Error(
-      "Glean connector is not enabled. Run openwiki auth glean or set enabled: true in ~/.openwiki/connectors/glean/config.json.",
-    );
+    throw new Error(GLEAN_DISABLED_MESSAGE);
   }
 
   const { mcpUrl } = await resolveGleanTarget(config);
