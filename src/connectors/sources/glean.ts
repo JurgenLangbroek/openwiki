@@ -22,8 +22,20 @@ import { resolveGleanTarget, type GleanTargetConfig } from "./glean-backend.js";
 
 export { resolveGleanBackendUrl } from "./glean-backend.js";
 
+export type ExpansionCandidate = {
+  id: string;
+  sourceStream: EvidenceStreamName;
+  tier: number;
+  title?: string;
+  url?: string;
+};
+
 export type GleanProbeTransport = {
   fetchCalendar: (input: { backendUrl: string }) => Promise<unknown>;
+  fetchExpansion: (input: {
+    backendUrl: string;
+    item: ExpansionCandidate;
+  }) => Promise<unknown>;
   fetchFeed: (input: { backendUrl: string }) => Promise<unknown>;
   fetchMessages: (input: {
     backendUrl: string;
@@ -38,6 +50,10 @@ export type GleanProbeTransport = {
 
 type GleanConfig = GleanTargetConfig & {
   enabled?: boolean;
+  expansion?: {
+    maxItems?: number;
+    transcriptDatasources?: string[];
+  };
   messagingApps?: string[];
   windowHours?: number;
 };
@@ -64,6 +80,10 @@ export function createGleanConnector(overrides?: {
       const runId = createRunId();
       const config = await readConnectorConfig<GleanConfig>("glean", {
         enabled: false,
+        expansion: {
+          maxItems: 20,
+          transcriptDatasources: ["fellow"],
+        },
         mcpPath: "/mcp/default",
         messagingApps: ["slack"],
         windowHours: 48,
@@ -131,6 +151,7 @@ export function createGleanConnector(overrides?: {
       let state = await readConnectorState("glean");
       const warnings: string[] = [];
       const summaries: string[] = [];
+      const pulledStreams: PulledEvidenceStream[] = [];
       let succeededStreams = 0;
 
       const streamPulls: EvidenceStreamPull[] = [
@@ -208,12 +229,47 @@ export function createGleanConnector(overrides?: {
             ),
           );
           state = withSeenIds(state, streamPull.stream, pulled.seenIds);
+          pulledStreams.push({
+            items: pulled.artifact.items,
+            stream: streamPull.stream,
+          });
           succeededStreams += 1;
           summaries.push(
             `${streamPull.stream} ${pulled.artifact.counts.new} new`,
           );
         } catch (error) {
           warnings.push(createStreamWarning(streamPull.stream, error));
+        }
+      }
+
+      if (succeededStreams > 0) {
+        try {
+          const pulled = await pullExpandedStream({
+            backendUrl: target.backendUrl,
+            fetchedAt,
+            maxItems: normalizeExpansionMaxItems(config.expansion?.maxItems),
+            pulledStreams,
+            seenIds: state.seenIds?.expanded ?? [],
+            transcriptDatasources: normalizeTranscriptDatasources(
+              config.expansion?.transcriptDatasources,
+            ),
+            transport,
+          });
+          warnings.push(...pulled.warnings);
+          rawFiles.push(
+            await writeRawJson(
+              "glean",
+              runId,
+              "expanded.json",
+              pulled.artifact,
+            ),
+          );
+          state = withSeenIds(state, "expanded", pulled.seenIds);
+          summaries.push(`expanded ${pulled.artifact.counts.expanded} new`);
+        } catch (error) {
+          warnings.push(
+            `Glean expanded pull failed: ${readErrorReason(error)}`,
+          );
         }
       }
 
@@ -254,7 +310,9 @@ const FEED_CATEGORIES = [
 ] as const;
 const MAX_SEEN_IDS_PER_STREAM = 5_000;
 const CALENDAR_WINDOW_DAYS = 7;
+const DEFAULT_EXPANSION_MAX_ITEMS = 20;
 const DEFAULT_MESSAGING_APPS = ["slack"];
+const DEFAULT_TRANSCRIPT_DATASOURCES = ["fellow"];
 const DEFAULT_WINDOW_HOURS = 48;
 
 type JsonObject = Record<string, unknown>;
@@ -269,6 +327,29 @@ type DocumentNormalizationOptions = {
 };
 type DocumentStreamName = "feed" | "messages" | "my-work";
 type EvidenceStreamName = DocumentStreamName | "calendar";
+type ExpansionCounts = {
+  candidates: number;
+  capped: number;
+  deduplicated: number;
+  expanded: number;
+  failed: number;
+};
+type ExpansionPullResult = {
+  artifact: {
+    counts: ExpansionCounts;
+    fetchedAt: string;
+    items: JsonObject[];
+    stream: "expanded";
+  };
+  seenIds: string[];
+  warnings: string[];
+};
+type PulledEvidenceStream = {
+  items: JsonObject[];
+  stream: EvidenceStreamName;
+};
+type RankedExpansionCandidate = ExpansionCandidate & { order: number };
+type SeenStreamName = EvidenceStreamName | "expanded";
 type StreamCounts = {
   deduplicated: number;
   fetched: number;
@@ -288,7 +369,7 @@ type StreamPullInput = {
   seenIds: string[];
 };
 type StreamPullResult = {
-  artifact: { counts: StreamCounts };
+  artifact: { counts: StreamCounts; items: JsonObject[] };
   seenIds: string[];
 };
 
@@ -301,6 +382,11 @@ function createDefaultTransport(
     fetchCalendar: async ({ backendUrl }) =>
       await postGleanJson(backendUrl, "/rest/api/v1/people", {
         includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
+      }),
+    fetchExpansion: async ({ backendUrl, item }) =>
+      await postGleanJson(backendUrl, "/rest/api/v1/getdocuments", {
+        documentSpecs: [{ id: item.id }],
+        includeFields: ["DOCUMENT_CONTENT"],
       }),
     fetchFeed: async ({ backendUrl }) =>
       await postGleanJson(backendUrl, "/rest/api/v1/feed", {
@@ -430,6 +516,188 @@ function mergeSearchResponses(responses: unknown[]): JsonObject {
         : [],
     ),
   };
+}
+
+async function pullExpandedStream({
+  backendUrl,
+  fetchedAt,
+  maxItems,
+  pulledStreams,
+  seenIds,
+  transcriptDatasources,
+  transport,
+}: {
+  backendUrl: string;
+  fetchedAt: string;
+  maxItems: number;
+  pulledStreams: PulledEvidenceStream[];
+  seenIds: string[];
+  transcriptDatasources: string[];
+  transport: GleanProbeTransport;
+}): Promise<ExpansionPullResult> {
+  const candidatesById = new Map<string, RankedExpansionCandidate>();
+  const transcriptDatasourceSet = new Set(transcriptDatasources);
+  let order = 0;
+
+  for (const pulledStream of pulledStreams) {
+    for (const item of pulledStream.items) {
+      const candidate = createExpansionCandidate(
+        pulledStream.stream,
+        item,
+        transcriptDatasourceSet,
+      );
+      if (!candidate) {
+        continue;
+      }
+
+      const rankedCandidate = { ...candidate, order };
+      order += 1;
+      const existing = candidatesById.get(candidate.id);
+      if (!existing || candidate.tier < existing.tier) {
+        candidatesById.set(candidate.id, rankedCandidate);
+      }
+    }
+  }
+
+  const candidates = [...candidatesById.values()];
+  const priorIds = new Set(seenIds);
+  const unseenCandidates = candidates.filter(
+    (candidate) => !priorIds.has(candidate.id),
+  );
+  unseenCandidates.sort(
+    (left, right) => left.tier - right.tier || left.order - right.order,
+  );
+  const selectedCandidates = unseenCandidates.slice(0, maxItems);
+  const items: JsonObject[] = [];
+  const expandedIds: string[] = [];
+  const warnings: string[] = [];
+  let failed = 0;
+
+  for (const candidate of selectedCandidates) {
+    try {
+      const response = await transport.fetchExpansion({
+        backendUrl,
+        item: candidate,
+      });
+      items.push(
+        removeUndefinedValues({
+          content: extractExpansionContent(response),
+          fetchedAt,
+          id: candidate.id,
+          sourceStream: candidate.sourceStream,
+          tier: candidate.tier,
+          title: candidate.title,
+          url: candidate.url,
+        }),
+      );
+      expandedIds.push(candidate.id);
+    } catch (error) {
+      failed += 1;
+      warnings.push(
+        `Glean expanded fetch failed for ${candidate.id}: ${readErrorReason(error)}`,
+      );
+    }
+  }
+
+  return {
+    artifact: {
+      counts: {
+        candidates: candidates.length,
+        capped: unseenCandidates.length - selectedCandidates.length,
+        deduplicated: candidates.length - unseenCandidates.length,
+        expanded: items.length,
+        failed,
+      },
+      fetchedAt,
+      items,
+      stream: "expanded",
+    },
+    seenIds: [...seenIds, ...expandedIds].slice(-MAX_SEEN_IDS_PER_STREAM),
+    warnings,
+  };
+}
+
+function createExpansionCandidate(
+  stream: EvidenceStreamName,
+  item: JsonObject,
+  transcriptDatasources: Set<string>,
+): ExpansionCandidate | null {
+  const id = readString(item, "id");
+  if (!id) {
+    return null;
+  }
+
+  let tier: number | undefined;
+  if (
+    stream === "calendar" &&
+    readString(item, "kind") === "document-activity" &&
+    transcriptDatasources.has(
+      (readString(item, "datasource") ?? "").toLowerCase(),
+    )
+  ) {
+    tier = 1;
+  } else if (stream === "my-work") {
+    tier = 2;
+  } else if (
+    stream === "messages" ||
+    (stream === "feed" && readString(item, "category") === "MENTION")
+  ) {
+    tier = 3;
+  }
+
+  return tier === undefined
+    ? null
+    : {
+        id,
+        sourceStream: stream,
+        tier,
+        title: readString(item, "title"),
+        url: readString(item, "url"),
+      };
+}
+
+function extractExpansionContent(response: unknown): unknown {
+  return extractExpansionText(response) ?? response ?? null;
+}
+
+function extractExpansionText(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!isJsonObject(value)) {
+    return undefined;
+  }
+
+  const directText = readString(value, "text", "fullText");
+  if (directText) {
+    return directText;
+  }
+  if (Array.isArray(value.fullTextList)) {
+    const textList = value.fullTextList.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+    if (textList.length > 0) {
+      return textList.join("\n");
+    }
+  }
+
+  for (const nestedValue of [value.content, value.document]) {
+    const nestedText = extractExpansionText(nestedValue);
+    if (nestedText) {
+      return nestedText;
+    }
+  }
+
+  if (Array.isArray(value.documents)) {
+    for (const document of value.documents) {
+      const documentText = extractExpansionText(document);
+      if (documentText) {
+        return documentText;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 function pullDocumentStream({
@@ -843,6 +1111,14 @@ function normalizeWindowHours(windowHours: number | undefined): number {
     : DEFAULT_WINDOW_HOURS;
 }
 
+function normalizeExpansionMaxItems(maxItems: number | undefined): number {
+  return typeof maxItems === "number" &&
+    Number.isFinite(maxItems) &&
+    maxItems > 0
+    ? maxItems
+    : DEFAULT_EXPANSION_MAX_ITEMS;
+}
+
 function normalizeMessagingApps(messagingApps: string[] | undefined): string[] {
   if (!Array.isArray(messagingApps)) {
     return DEFAULT_MESSAGING_APPS;
@@ -854,9 +1130,25 @@ function normalizeMessagingApps(messagingApps: string[] | undefined): string[] {
     .filter((app) => app.length > 0);
 }
 
+function normalizeTranscriptDatasources(
+  transcriptDatasources: string[] | undefined,
+): string[] {
+  if (!Array.isArray(transcriptDatasources)) {
+    return DEFAULT_TRANSCRIPT_DATASOURCES;
+  }
+
+  const normalized = transcriptDatasources
+    .filter(
+      (datasource): datasource is string => typeof datasource === "string",
+    )
+    .map((datasource) => datasource.trim().toLowerCase())
+    .filter((datasource) => datasource.length > 0);
+  return normalized.length > 0 ? normalized : DEFAULT_TRANSCRIPT_DATASOURCES;
+}
+
 function withSeenIds(
   state: ConnectorState,
-  stream: EvidenceStreamName,
+  stream: SeenStreamName,
   seenIds: string[],
 ): ConnectorState {
   return {
@@ -876,8 +1168,11 @@ function createStreamWarning(
     return "Glean feed endpoint is unavailable for this tenant; the MCP probe was kept.";
   }
 
-  const reason = error instanceof Error ? error.message : String(error);
-  return `Glean ${stream} pull failed: ${reason}`;
+  return `Glean ${stream} pull failed: ${readErrorReason(error)}`;
+}
+
+function readErrorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isFeedEndpointUnavailable(error: unknown): boolean {

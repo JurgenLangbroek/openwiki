@@ -55,6 +55,7 @@ async function writeGleanConfig(
 function createEmptyGleanTransport() {
   return {
     fetchCalendar: () => Promise.resolve({ results: [] }),
+    fetchExpansion: () => Promise.resolve({}),
     fetchFeed: () => Promise.resolve({ items: [] }),
     fetchMessages: () => Promise.resolve({ results: [] }),
     fetchMyWork: () => Promise.resolve({ results: [] }),
@@ -259,6 +260,14 @@ describe("Glean connector", () => {
             ],
           });
         },
+        fetchExpansion: ({ backendUrl, item }) => {
+          expect(backendUrl).toBe("https://acme-be.glean.com");
+          return Promise.resolve({
+            document: {
+              content: { fullText: `Full content for ${item.id}` },
+            },
+          });
+        },
         fetchMessages: ({ backendUrl, sinceDate }) => {
           expect({ backendUrl, sinceDate }).toEqual({
             backendUrl: "https://acme-be.glean.com",
@@ -316,7 +325,7 @@ describe("Glean connector", () => {
 
     expect(result.status).toBe("success");
     expect(result.message).toBe(
-      "Probed 2 MCP tool(s) at https://acme-be.glean.com; pulled feed 1 new, my-work 1 new, messages 1 new, calendar 2 new.",
+      "Probed 2 MCP tool(s) at https://acme-be.glean.com; pulled feed 1 new, my-work 1 new, messages 1 new, calendar 2 new, expanded 2 new.",
     );
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
@@ -324,6 +333,7 @@ describe("Glean connector", () => {
       "my-work.json",
       "messages.json",
       "calendar.json",
+      "expanded.json",
     ]);
 
     const probeText = await readFile(result.rawFiles[0], "utf8");
@@ -432,6 +442,37 @@ describe("Glean connector", () => {
       stream: "calendar",
       window: { days: 7 },
     });
+    expect(artifacts["expanded.json"]).toEqual({
+      counts: {
+        candidates: 2,
+        capped: 0,
+        deduplicated: 0,
+        expanded: 2,
+        failed: 0,
+      },
+      fetchedAt: "2026-07-13T12:00:00.000Z",
+      items: [
+        {
+          content: "Full content for owned-document-1",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "owned-document-1",
+          sourceStream: "my-work",
+          tier: 2,
+          title: "Atlas launch plan",
+          url: "https://app.glean.com/go/owned-document-1",
+        },
+        {
+          content: "Full content for message-thread-1",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "message-thread-1",
+          sourceStream: "messages",
+          tier: 3,
+          title: "Atlas launch thread",
+          url: "https://app.glean.com/go/message-thread-1",
+        },
+      ],
+      stream: "expanded",
+    });
 
     const stateText = await readFile(
       path.join(openWikiHome, "connectors", "glean", "state.json"),
@@ -447,6 +488,10 @@ describe("Glean connector", () => {
     expect(state.seenIds.calendar).toEqual([
       "busy-event-1",
       "activity-document-1",
+    ]);
+    expect(state.seenIds.expanded).toEqual([
+      "owned-document-1",
+      "message-thread-1",
     ]);
     expect(state.runs[0]).toMatchObject({
       rawFiles: result.rawFiles,
@@ -862,6 +907,7 @@ describe("Glean connector", () => {
             },
           ],
         }),
+      fetchExpansion: () => Promise.resolve({}),
       fetchFeed: () =>
         Promise.resolve({
           items: [
@@ -921,8 +967,9 @@ describe("Glean connector", () => {
       "my-work",
       "messages",
       "calendar",
+      "expanded",
     ]);
-    for (const artifact of secondArtifacts) {
+    for (const artifact of secondArtifacts.slice(0, 4)) {
       expect(artifact.counts).toMatchObject({
         deduplicated: 1,
         fetched: 1,
@@ -931,6 +978,17 @@ describe("Glean connector", () => {
       });
       expect(artifact.items).toEqual([]);
     }
+    expect(secondArtifacts[4]).toMatchObject({
+      counts: {
+        candidates: 0,
+        capped: 0,
+        deduplicated: 0,
+        expanded: 0,
+        failed: 0,
+      },
+      items: [],
+      stream: "expanded",
+    });
     const secondState = JSON.parse(
       await readFile(
         path.join(openWikiHome, "connectors", "glean", "state.json"),
@@ -1057,6 +1115,360 @@ describe("Glean connector", () => {
     ]);
   });
 
+  test("expands distinct candidates in tier order with full-content provenance", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
+    await writeGleanConfig({
+      enabled: true,
+      expansion: { transcriptDatasources: [" Fellow "] },
+      instance: "acme",
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const fetchedIds: string[] = [];
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchCalendar: () =>
+          Promise.resolve({
+            relatedDocuments: [
+              {
+                datasource: "FELLOW",
+                id: "transcript-1",
+                title: "Planning transcript",
+                url: "https://app.glean.com/go/transcript-1",
+              },
+            ],
+            results: [],
+          }),
+        fetchExpansion: ({ item }) => {
+          fetchedIds.push(item.id);
+          if (item.id === "transcript-1") {
+            return Promise.resolve({
+              document: { content: { fullText: "Transcript full text" } },
+            });
+          }
+          if (item.id === "owned-1") {
+            return Promise.resolve({
+              content: { fullTextList: ["Owned", "document"] },
+            });
+          }
+          return Promise.resolve({ text: "Mention full text" });
+        },
+        fetchFeed: () =>
+          Promise.resolve({
+            items: [
+              {
+                category: "MENTION",
+                document: {
+                  id: "transcript-1",
+                  title: "Lower-priority transcript mention",
+                  url: "https://app.glean.com/go/transcript-1",
+                },
+              },
+              {
+                category: "MENTION",
+                document: {
+                  id: "mention-1",
+                  title: "Direct mention",
+                  url: "https://app.glean.com/go/mention-1",
+                },
+              },
+            ],
+          }),
+        fetchMyWork: () =>
+          Promise.resolve({
+            results: [
+              {
+                document: {
+                  id: "owned-1",
+                  title: "Owned plan",
+                  url: "https://app.glean.com/go/owned-1",
+                },
+              },
+            ],
+          }),
+      },
+    });
+
+    const result = await connector.ingest();
+    const expandedPath = result.rawFiles.find(
+      (file) => path.basename(file) === "expanded.json",
+    )!;
+    const expandedText = await readFile(expandedPath, "utf8");
+    const expanded = JSON.parse(expandedText) as Record<string, unknown>;
+
+    expect(result.status).toBe("success");
+    expect(fetchedIds).toEqual(["transcript-1", "owned-1", "mention-1"]);
+    expect(expanded).toEqual({
+      counts: {
+        candidates: 3,
+        capped: 0,
+        deduplicated: 0,
+        expanded: 3,
+        failed: 0,
+      },
+      fetchedAt: "2026-07-13T12:00:00.000Z",
+      items: [
+        {
+          content: "Transcript full text",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "transcript-1",
+          sourceStream: "calendar",
+          tier: 1,
+          title: "Planning transcript",
+          url: "https://app.glean.com/go/transcript-1",
+        },
+        {
+          content: "Owned\ndocument",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "owned-1",
+          sourceStream: "my-work",
+          tier: 2,
+          title: "Owned plan",
+          url: "https://app.glean.com/go/owned-1",
+        },
+        {
+          content: "Mention full text",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "mention-1",
+          sourceStream: "feed",
+          tier: 3,
+          title: "Direct mention",
+          url: "https://app.glean.com/go/mention-1",
+        },
+      ],
+      stream: "expanded",
+    });
+    expect(expandedText).not.toContain("secret-access-token");
+    expect(expandedText).not.toContain("Authorization");
+  });
+
+  test("caps expansion after ranking so lower-value candidates stay snippets", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      expansion: { maxItems: 2, transcriptDatasources: ["fellow"] },
+      instance: "acme",
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const fetchExpansion = vi.fn((input: { item: { id: string } }) =>
+      Promise.resolve({ content: `Full ${input.item.id}` }),
+    );
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchCalendar: () =>
+          Promise.resolve({
+            relatedDocuments: [
+              {
+                datasource: "fellow",
+                id: "tier-1",
+                url: "https://app.glean.com/go/tier-1",
+              },
+            ],
+            results: [],
+          }),
+        fetchExpansion,
+        fetchFeed: () =>
+          Promise.resolve({
+            items: [
+              {
+                category: "MENTION",
+                id: "tier-3-feed",
+                url: "https://app.glean.com/go/tier-3-feed",
+              },
+            ],
+          }),
+        fetchMessages: () =>
+          Promise.resolve({
+            results: [
+              {
+                id: "tier-3-message",
+                url: "https://app.glean.com/go/tier-3-message",
+              },
+            ],
+          }),
+        fetchMyWork: () =>
+          Promise.resolve({
+            results: [
+              {
+                id: "tier-2",
+                url: "https://app.glean.com/go/tier-2",
+              },
+            ],
+          }),
+      },
+    });
+
+    const result = await connector.ingest();
+    const expanded = JSON.parse(
+      await readFile(
+        result.rawFiles.find(
+          (file) => path.basename(file) === "expanded.json",
+        )!,
+        "utf8",
+      ),
+    ) as {
+      counts: Record<string, number>;
+      items: { id: string; tier: number }[];
+    };
+
+    expect(result.status).toBe("success");
+    expect(fetchExpansion).toHaveBeenCalledTimes(2);
+    expect(fetchExpansion.mock.calls.map(([input]) => input.item.id)).toEqual([
+      "tier-1",
+      "tier-2",
+    ]);
+    expect(expanded.counts).toEqual({
+      candidates: 4,
+      capped: 2,
+      deduplicated: 0,
+      expanded: 2,
+      failed: 0,
+    });
+    expect(expanded.items.map(({ id, tier }) => ({ id, tier }))).toEqual([
+      { id: "tier-1", tier: 1 },
+      { id: "tier-2", tier: 2 },
+    ]);
+  });
+
+  test("does not re-fetch an expanded id when it appears in another stream", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    let secondRun = false;
+    const fetchExpansion = vi.fn((input: { item: { id: string } }) =>
+      Promise.resolve({ text: `Full ${input.item.id}` }),
+    );
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchExpansion,
+        fetchMessages: () =>
+          Promise.resolve({
+            results: secondRun
+              ? [
+                  {
+                    id: "cross-run-1",
+                    url: "https://app.glean.com/go/cross-run-1",
+                  },
+                ]
+              : [],
+          }),
+        fetchMyWork: () =>
+          Promise.resolve({
+            results: secondRun
+              ? []
+              : [
+                  {
+                    id: "cross-run-1",
+                    url: "https://app.glean.com/go/cross-run-1",
+                  },
+                ],
+          }),
+      },
+    });
+
+    const first = await connector.ingest();
+    expect(first.status).toBe("success");
+    expect(fetchExpansion).toHaveBeenCalledTimes(1);
+    fetchExpansion.mockClear();
+    secondRun = true;
+
+    const second = await connector.ingest();
+    const expanded = JSON.parse(
+      await readFile(
+        second.rawFiles.find(
+          (file) => path.basename(file) === "expanded.json",
+        )!,
+        "utf8",
+      ),
+    ) as { counts: Record<string, number>; items: unknown[] };
+    const state = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as { seenIds: Record<string, string[]> };
+
+    expect(second.status).toBe("success");
+    expect(fetchExpansion).not.toHaveBeenCalled();
+    expect(expanded).toMatchObject({
+      counts: {
+        candidates: 1,
+        capped: 0,
+        deduplicated: 1,
+        expanded: 0,
+        failed: 0,
+      },
+      items: [],
+    });
+    expect(state.seenIds.expanded).toEqual(["cross-run-1"]);
+  });
+
+  test("keeps successful expansions when one full-content fetch fails", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchExpansion: ({ item }) =>
+          item.id === "fails-1"
+            ? Promise.reject(new Error("document unavailable"))
+            : Promise.resolve({ text: "Working full text" }),
+        fetchMessages: () =>
+          Promise.resolve({
+            results: [
+              {
+                id: "works-1",
+                url: "https://app.glean.com/go/works-1",
+              },
+            ],
+          }),
+        fetchMyWork: () =>
+          Promise.resolve({
+            results: [
+              {
+                id: "fails-1",
+                url: "https://app.glean.com/go/fails-1",
+              },
+            ],
+          }),
+      },
+    });
+
+    const result = await connector.ingest();
+    const expanded = JSON.parse(
+      await readFile(
+        result.rawFiles.find(
+          (file) => path.basename(file) === "expanded.json",
+        )!,
+        "utf8",
+      ),
+    ) as { counts: Record<string, number>; items: { id: string }[] };
+    const state = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as { seenIds: Record<string, string[]> };
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toContain(
+      "Glean expanded fetch failed for fails-1: document unavailable",
+    );
+    expect(expanded).toMatchObject({
+      counts: {
+        candidates: 2,
+        capped: 0,
+        deduplicated: 0,
+        expanded: 1,
+        failed: 1,
+      },
+      items: [{ id: "works-1" }],
+    });
+    expect(state.seenIds.expanded).toEqual(["works-1"]);
+    expect(state.seenIds.expanded).not.toContain("fails-1");
+  });
+
   test("degrades a feed failure while the other streams succeed", async () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
@@ -1079,6 +1491,7 @@ describe("Glean connector", () => {
       "my-work.json",
       "messages.json",
       "calendar.json",
+      "expanded.json",
     ]);
   });
 
@@ -1104,6 +1517,7 @@ describe("Glean connector", () => {
       "feed.json",
       "messages.json",
       "calendar.json",
+      "expanded.json",
     ]);
     const state = JSON.parse(
       await readFile(
@@ -1124,6 +1538,7 @@ describe("Glean connector", () => {
     const connector = createGleanConnector({
       transport: {
         fetchCalendar: () => Promise.reject(failure),
+        fetchExpansion: () => Promise.resolve({}),
         fetchFeed: () => Promise.reject(failure),
         fetchMessages: () => Promise.reject(failure),
         fetchMyWork: () => Promise.reject(failure),
@@ -1168,6 +1583,7 @@ describe("Glean connector", () => {
       "my-work.json",
       "messages.json",
       "calendar.json",
+      "expanded.json",
     ]);
     expect(result.warnings.join(" ")).toMatch(/feed endpoint.*unavailable/iu);
 
