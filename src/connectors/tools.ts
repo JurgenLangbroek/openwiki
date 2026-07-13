@@ -44,7 +44,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
     }),
     new DynamicStructuredTool({
       name: "openwiki_list_mcp_tools",
-      description: `List live MCP tools for a configured MCP connector and write discovery under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId })}. Use exact returned tool names.`,
+      description: `List live MCP tools for a configured MCP connector and write discovery under ~/.openwiki/connectors/<id>/raw. Each tool includes a read-only policy decision with its allowed/denied status and reason; denied tools cannot be called. Input: ${JSON.stringify({ connectorId: mcpConnectorId })}. Use exact returned tool names.`,
       schema: {
         type: "object",
         properties: {
@@ -63,7 +63,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
     }),
     new DynamicStructuredTool({
       name: "openwiki_call_mcp_tool",
-      description: `Call one exact discovered read-only MCP tool and write the result under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId, toolName: "exact_tool_name", args: { query: "Applied AI" } })}.`,
+      description: `Call one exact discovered MCP tool permitted by the deny-by-default read-only policy and write the result under ~/.openwiki/connectors/<id>/raw. Input: ${JSON.stringify({ connectorId: mcpConnectorId, toolName: "exact_tool_name", args: { query: "Applied AI" } })}.`,
       schema: {
         type: "object",
         properties: {

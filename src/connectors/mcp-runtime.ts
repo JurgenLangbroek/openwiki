@@ -13,6 +13,11 @@ import {
 } from "./mcp-client.js";
 import { sanitizeMcpTransport } from "./mcp-shared.js";
 import { createConnectorRegistry, type ConnectorRegistry } from "./registry.js";
+import {
+  annotateToolsWithPolicy,
+  evaluateToolPolicy,
+  type ToolWithPolicy,
+} from "./tool-policy.js";
 import type {
   ConnectorId,
   ConnectorIngestResult,
@@ -23,7 +28,7 @@ export type McpToolDiscoveryResult = {
   connectorId: ConnectorId;
   rawFile: string;
   runId: string;
-  tools: McpToolDescriptor[];
+  tools: ToolWithPolicy<McpToolDescriptor>[];
 };
 
 export type McpToolCallResult = {
@@ -60,11 +65,12 @@ export async function discoverMcpConnectorTools(
   const state = await readConnectorState(connectorId);
   const config = await readMcpConnectorConfig(connectorId);
   const discovery = await listMcpTools(config);
+  const tools = annotateToolsWithPolicy(discovery.tools, config.allowedTools);
   const rawFile = await writeRawJson(connectorId, runId, "mcp-tools.json", {
     connectorId,
     generatedAt: new Date().toISOString(),
-    note: "Live MCP tools/list discovery. Tool names must be used exactly as returned.",
-    tools: discovery.tools,
+    note: "Live MCP tools/list discovery with read-only policy decisions. Tool names must be used exactly as returned; denied tools are not callable.",
+    tools,
     transport: sanitizeMcpTransport(config.transport),
   });
 
@@ -79,7 +85,7 @@ export async function discoverMcpConnectorTools(
     connectorId,
     rawFile,
     runId,
-    tools: discovery.tools,
+    tools,
   };
 }
 
@@ -100,7 +106,10 @@ export async function callMcpConnectorTool(
     );
   }
 
-  const policy = getToolCallPolicy(config, tool);
+  const policy = evaluateToolPolicy({
+    allowedTools: config.allowedTools,
+    tool,
+  });
   if (!policy.allowed) {
     throw new Error(policy.reason);
   }
@@ -177,67 +186,6 @@ async function recordMcpRun(
       warnings: run.warnings,
     }),
   );
-}
-
-function getToolCallPolicy(
-  config: McpConnectorConfig,
-  tool: McpToolDescriptor,
-): { allowed: true; reason: string } | { allowed: false; reason: string } {
-  if (config.allowedTools?.includes(tool.name)) {
-    return {
-      allowed: true,
-      reason: "allowed by connector config allowedTools",
-    };
-  }
-
-  if (tool.annotations?.readOnlyHint === true) {
-    return { allowed: true, reason: "allowed by MCP readOnlyHint annotation" };
-  }
-
-  if (
-    isHostedNotionTransport(config.transport) &&
-    looksLikeReadOnlyNotionTool(tool)
-  ) {
-    return {
-      allowed: true,
-      reason: "allowed by hosted Notion read-only tool name/description",
-    };
-  }
-
-  return {
-    allowed: false,
-    reason: `MCP tool ${tool.name} is not marked read-only. Add it to allowedTools in the local connector config only if it is safe for ingestion.`,
-  };
-}
-
-function isHostedNotionTransport(
-  transport: McpConnectorConfig["transport"],
-): boolean {
-  if (transport?.type !== "http" || !transport.url) {
-    return false;
-  }
-
-  const url = new URL(transport.url);
-
-  return (
-    url.protocol === "https:" &&
-    url.hostname === "mcp.notion.com" &&
-    url.pathname.replace(/\/+$/u, "") === "/mcp"
-  );
-}
-
-function looksLikeReadOnlyNotionTool(tool: McpToolDescriptor): boolean {
-  const text = `${tool.name} ${tool.description ?? ""}`;
-  const looksReadOnly =
-    /\b(search|retrieve|get|list|query|read|fetch|find|lookup|load|children)\b/iu.test(
-      text,
-    );
-  const looksMutating =
-    /\b(create|update|delete|archive|restore|move|patch|insert|append|comment|invite|share|upload|write|edit|send|add|remove)\b/iu.test(
-      text,
-    );
-
-  return looksReadOnly && !looksMutating;
 }
 
 function sanitizeValue(value: unknown): unknown {

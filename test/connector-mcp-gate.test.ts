@@ -10,6 +10,16 @@ import {
 import { createOpenWikiConnectorTools } from "../src/connectors/tools.ts";
 
 function getConnectorIdEnum(toolName: string): string[] {
+  const tool = getConnectorTool(toolName);
+
+  const schema = tool.schema as unknown as {
+    properties: { connectorId: { enum: string[] } };
+  };
+
+  return schema.properties.connectorId.enum;
+}
+
+function getConnectorTool(toolName: string) {
   const tool = createOpenWikiConnectorTools().find(
     (candidate) => candidate.name === toolName,
   );
@@ -18,11 +28,7 @@ function getConnectorIdEnum(toolName: string): string[] {
     throw new Error(`Missing connector tool: ${toolName}`);
   }
 
-  const schema = tool.schema as unknown as {
-    properties: { connectorId: { enum: string[] } };
-  };
-
-  return schema.properties.connectorId.enum;
+  return tool;
 }
 
 describe("MCP connector eligibility", () => {
@@ -71,5 +77,12 @@ describe("MCP connector eligibility", () => {
     expect(getConnectorIdEnum("openwiki_read_raw_item")).toEqual(
       expectedConnectorIds,
     );
+  });
+
+  test("tells the agent that listed tools include enforced policy decisions", () => {
+    const description = getConnectorTool("openwiki_list_mcp_tools").description;
+
+    expect(description).toMatch(/policy decision/iu);
+    expect(description).toMatch(/denied tools cannot be called/iu);
   });
 });
