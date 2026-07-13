@@ -334,6 +334,70 @@ describe("raw connector retention", () => {
     await expect(readConnectorState("glean")).resolves.toEqual(stampedState);
   });
 
+  test("marks only unsynthesized runs without deleted raw data", async () => {
+    const openWikiHome = await createTempHome();
+    const {
+      markUnsynthesizedRunsSynthesized,
+      readConnectorState,
+      writeConnectorState,
+    } = await import("../src/connectors/io.ts");
+    const initialState = {
+      runs: [
+        {
+          at: "2026-07-10T00:00:00.000Z",
+          rawFiles: ["already-synthesized.json"],
+          runId: "2026-07-10T00-00-00-000Z",
+          status: "success" as const,
+          synthesizedAt: "2026-07-10T01:00:00.000Z",
+          warnings: [],
+        },
+        {
+          at: "2026-07-11T00:00:00.000Z",
+          rawFiles: ["unsynthesized.json"],
+          runId: "2026-07-11T00-00-00-000Z",
+          status: "success" as const,
+          warnings: [],
+        },
+        {
+          at: "2026-07-12T00:00:00.000Z",
+          rawDeletedAt: "2026-07-13T00:00:00.000Z",
+          rawFiles: [],
+          runId: "2026-07-12T00-00-00-000Z",
+          status: "success" as const,
+          warnings: [],
+        },
+      ],
+      version: 1 as const,
+    };
+    await writeConnectorState("git-repo", initialState);
+
+    await markUnsynthesizedRunsSynthesized(
+      "git-repo",
+      "2026-07-13T01:00:00.000Z",
+    );
+
+    await expect(readConnectorState("git-repo")).resolves.toEqual({
+      ...initialState,
+      runs: [
+        initialState.runs[0],
+        {
+          ...initialState.runs[1],
+          synthesizedAt: "2026-07-13T01:00:00.000Z",
+        },
+        initialState.runs[2],
+      ],
+    });
+
+    await expect(
+      markUnsynthesizedRunsSynthesized("notion", "2026-07-13T01:00:00.000Z"),
+    ).resolves.toBeUndefined();
+    expect(
+      await pathExists(
+        path.join(openWikiHome, "connectors", "notion", "state.json"),
+      ),
+    ).toBe(false);
+  });
+
   test("stamps synthesis and sweeps retention during scheduled ingestion", async () => {
     const openWikiHome = await createTempHome();
     const { readConnectorState, writeConnectorState, writeRawJson } =
@@ -443,5 +507,87 @@ describe("raw connector retention", () => {
         path.join(openWikiHome, "connectors", "glean", "raw", expiredRunId),
       ),
     ).toBe(false);
+  });
+
+  test("stamps agentic connector runs without a deterministic pull", async () => {
+    const openWikiHome = await createTempHome();
+    const { readConnectorState, writeConnectorState, writeRawJson } =
+      await import("../src/connectors/io.ts");
+    const { saveOpenWikiOnboardingConfig } =
+      await import("../src/onboarding.ts");
+    const runId = "2026-06-23T00-00-00-000Z";
+    const rawPath = await writeRawJson("git-repo", runId, "manifest.json", {
+      repositories: [],
+    });
+    await writeConnectorState("git-repo", {
+      runs: [
+        {
+          at: "2026-06-23T00:00:00.000Z",
+          rawFiles: [rawPath],
+          runId,
+          status: "success",
+          warnings: [],
+        },
+      ],
+      version: 1,
+    });
+    await writeFile(
+      path.join(openWikiHome, "connectors", "git-repo", "config.json"),
+      `${JSON.stringify({ rawRetentionDays: 1 }, null, 2)}\n`,
+      "utf8",
+    );
+    await saveOpenWikiOnboardingConfig({
+      sourceInstances: [
+        {
+          connectedAt: "2026-07-01T00:00:00.000Z",
+          connectorId: "git-repo",
+          id: "git-repo-primary",
+        },
+      ],
+      sources: {},
+      version: 1,
+    });
+
+    const connector = {
+      backend: "local-git",
+      description: "Test Git repository",
+      displayName: "Git repository",
+      id: "git-repo",
+      ingest: vi.fn(),
+      requiredEnv: [],
+      supportsAgenticDiscovery: true,
+    };
+    const runOpenWikiAgent = vi.fn().mockResolvedValue({});
+    vi.doMock("../src/agent/index.ts", () => ({
+      createOpenWikiThreadId: () => "agentic-retention-test-thread",
+      runOpenWikiAgent,
+    }));
+    vi.doMock("../src/connectors/registry.ts", async () => {
+      const actual = await vi.importActual<
+        typeof import("../src/connectors/registry.ts")
+      >("../src/connectors/registry.ts");
+
+      return {
+        ...actual,
+        createConnectorRegistry: () => ({ "git-repo": connector }),
+      };
+    });
+    const { runOpenWikiIngestion } = await import("../src/ingestion.ts");
+
+    await expect(
+      runOpenWikiIngestion("ignored", { target: "git-repo" }),
+    ).resolves.toMatchObject({
+      results: [{ connectorId: "git-repo", status: "agent-updated" }],
+    });
+
+    expect(runOpenWikiAgent).toHaveBeenCalledOnce();
+    expect(connector.ingest).not.toHaveBeenCalled();
+    const stampedRun = (await readConnectorState("git-repo")).runs?.[0];
+    expect(stampedRun).toMatchObject({
+      rawFiles: [rawPath],
+      runId,
+    });
+    expect(typeof stampedRun?.synthesizedAt).toBe("string");
+    expect(await pathExists(rawPath)).toBe(true);
   });
 });

@@ -4,7 +4,10 @@ import type {
   OpenWikiRunOptions,
   OpenWikiRunResult,
 } from "./agent/types.js";
-import { markRunSynthesized } from "./connectors/io.js";
+import {
+  markRunSynthesized,
+  markUnsynthesizedRunsSynthesized,
+} from "./connectors/io.js";
 import {
   createConnectorRegistry,
   isConnectorId,
@@ -192,12 +195,19 @@ async function runSourceIngestion({
       }),
     });
 
-    if (deterministicPull?.runId && !agentResult.skipped) {
-      await markRunSynthesized(
-        connector.id,
-        deterministicPull.runId,
-        new Date().toISOString(),
-      );
+    if (!agentResult.skipped) {
+      if (deterministicPull?.runId) {
+        await markRunSynthesized(
+          connector.id,
+          deterministicPull.runId,
+          new Date().toISOString(),
+        );
+      } else {
+        await markUnsynthesizedRunsSynthesized(
+          connector.id,
+          new Date().toISOString(),
+        );
+      }
     }
 
     return {
