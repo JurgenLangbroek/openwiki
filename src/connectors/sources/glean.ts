@@ -15,6 +15,7 @@ import { listMcpTools, type McpToolDescriptor } from "../mcp-client.js";
 import type {
   ConnectorDefinition,
   ConnectorIngestResult,
+  ConnectorRetentionConfig,
   ConnectorRuntime,
   ConnectorState,
 } from "../types.js";
@@ -48,15 +49,16 @@ export type GleanProbeTransport = {
   listTools: (input: { mcpUrl: string }) => Promise<McpToolDescriptor[]>;
 };
 
-type GleanConfig = GleanTargetConfig & {
-  enabled?: boolean;
-  expansion?: {
-    maxItems?: number;
-    transcriptDatasources?: string[];
+type GleanConfig = GleanTargetConfig &
+  ConnectorRetentionConfig & {
+    enabled?: boolean;
+    expansion?: {
+      maxItems?: number;
+      transcriptDatasources?: string[];
+    };
+    messagingApps?: string[];
+    windowHours?: number;
   };
-  messagingApps?: string[];
-  windowHours?: number;
-};
 
 const definition: ConnectorDefinition = {
   backend: "direct-api",
