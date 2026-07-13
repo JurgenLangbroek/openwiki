@@ -139,8 +139,8 @@ const definition: ConnectorDefinition = {
     "Fetches Slack conversations, recent messages, and assistant search context with a Slack user token.",
   displayName: "Slack",
   id: "slack",
+  posture: "deterministic",
   requiredEnv: [OPENWIKI_SLACK_USER_TOKEN_ENV_KEY],
-  supportsAgenticDiscovery: false,
 };
 
 export function createSlackConnector(): ConnectorRuntime {

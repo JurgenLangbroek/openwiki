@@ -65,11 +65,11 @@ const definition: ConnectorDefinition = {
     "Fetches recent Gmail messages through the Gmail API with OAuth user credentials.",
   displayName: "Google / Gmail",
   id: "google",
+  posture: "deterministic",
   requiredEnv: [
     OPENWIKI_GMAIL_ACCESS_TOKEN_ENV_KEY,
     OPENWIKI_GMAIL_REFRESH_TOKEN_ENV_KEY,
   ],
-  supportsAgenticDiscovery: false,
 };
 
 export function createGmailConnector(): ConnectorRuntime {

@@ -1,3 +1,5 @@
+import type { ToolWithPolicy } from "./tool-policy.js";
+
 export type ConnectorId =
   | "git-repo"
   | "glean"
@@ -11,13 +13,15 @@ export type ConnectorId =
 export type ConnectorBackend =
   "direct-api" | "local-git" | "mcp-http" | "mcp-stdio";
 
+export type ConnectorPosture = "agentic" | "deterministic" | "hybrid";
+
 export type ConnectorDefinition = {
   backend: ConnectorBackend;
   description: string;
   displayName: string;
   id: ConnectorId;
+  posture: ConnectorPosture;
   requiredEnv: string[];
-  supportsAgenticDiscovery: boolean;
 };
 
 export type ConnectorIngestOptions = {
@@ -30,6 +34,11 @@ export type ConnectorIngestOptions = {
 
 export type ConnectorIngestResult = {
   connectorId: ConnectorId;
+  liveTools?: ToolWithPolicy<{
+    annotations?: Record<string, unknown>;
+    description?: string;
+    name: string;
+  }>[];
   message: string;
   rawFiles: string[];
   runId: string;
@@ -40,6 +49,7 @@ export type ConnectorIngestResult = {
 
 export type ConnectorRuntime = ConnectorDefinition & {
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
+  resolveMcpConfig?: () => Promise<McpConnectorConfig>;
 };
 
 export type ConnectorRetentionConfig = {

@@ -12,6 +12,7 @@ import {
   writeRawJson,
 } from "../io.js";
 import { listMcpTools, type McpToolDescriptor } from "../mcp-client.js";
+import { annotateToolsWithPolicy } from "../tool-policy.js";
 import type {
   ConnectorDefinition,
   ConnectorIngestResult,
@@ -51,6 +52,7 @@ export type GleanProbeTransport = {
 
 type GleanConfig = GleanTargetConfig &
   ConnectorRetentionConfig & {
+    allowedTools?: string[];
     enabled?: boolean;
     expansion?: {
       maxItems?: number;
@@ -66,11 +68,22 @@ const definition: ConnectorDefinition = {
     "Probes a Glean tenant's MCP tool catalog and pulls deterministic evidence streams.",
   displayName: "Glean",
   id: "glean",
+  posture: "hybrid",
   requiredEnv: [
     OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY,
     OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY,
   ],
-  supportsAgenticDiscovery: false,
+};
+
+const DEFAULT_GLEAN_CONFIG: GleanConfig = {
+  enabled: false,
+  expansion: {
+    maxItems: 20,
+    transcriptDatasources: ["fellow"],
+  },
+  mcpPath: "/mcp/default",
+  messagingApps: ["slack"],
+  windowHours: 48,
 };
 
 export function createGleanConnector(overrides?: {
@@ -80,16 +93,10 @@ export function createGleanConnector(overrides?: {
     ...definition,
     ingest: async (): Promise<ConnectorIngestResult> => {
       const runId = createRunId();
-      const config = await readConnectorConfig<GleanConfig>("glean", {
-        enabled: false,
-        expansion: {
-          maxItems: 20,
-          transcriptDatasources: ["fellow"],
-        },
-        mcpPath: "/mcp/default",
-        messagingApps: ["slack"],
-        windowHours: 48,
-      });
+      const config = await readConnectorConfig<GleanConfig>(
+        "glean",
+        DEFAULT_GLEAN_CONFIG,
+      );
       const transport =
         overrides?.transport ?? createDefaultTransport(config.messagingApps);
 
@@ -135,6 +142,7 @@ export function createGleanConnector(overrides?: {
       }
 
       const fetchedAt = new Date().toISOString();
+      const liveTools = annotateToolsWithPolicy(tools, config.allowedTools);
       const windowHours = normalizeWindowHours(config.windowHours);
       const sinceDate = calculateSinceDate(fetchedAt, windowHours);
       const rawFiles = [
@@ -289,6 +297,7 @@ export function createGleanConnector(overrides?: {
 
       return {
         connectorId: "glean",
+        ...(status === "success" ? { liveTools } : {}),
         message:
           status === "success"
             ? `Probed ${tools.length} MCP tool(s) at ${target.backendUrl}; pulled ${summaries.join(", ")}.`
@@ -299,6 +308,34 @@ export function createGleanConnector(overrides?: {
         status,
         warnings,
       };
+    },
+    resolveMcpConfig: resolveGleanMcpConfig,
+  };
+}
+
+async function resolveGleanMcpConfig() {
+  const config = await readConnectorConfig<GleanConfig>(
+    "glean",
+    DEFAULT_GLEAN_CONFIG,
+  );
+
+  if (config.enabled !== true) {
+    throw new Error(
+      "Glean connector is not enabled. Run openwiki auth glean or set enabled: true in ~/.openwiki/connectors/glean/config.json.",
+    );
+  }
+
+  const { mcpUrl } = await resolveGleanTarget(config);
+
+  return {
+    allowedTools: config.allowedTools,
+    enabled: true as const,
+    transport: {
+      headers: {
+        Authorization: `Bearer \${${OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY}}`,
+      },
+      type: "http" as const,
+      url: mcpUrl,
     },
   };
 }

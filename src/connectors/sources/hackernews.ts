@@ -68,8 +68,8 @@ const definition: ConnectorDefinition = {
     "Fetches Hacker News feeds and query results through public Hacker News APIs.",
   displayName: "Hacker News",
   id: "hackernews",
+  posture: "deterministic",
   requiredEnv: [],
-  supportsAgenticDiscovery: false,
 };
 
 export function createHackerNewsConnector(): ConnectorRuntime {

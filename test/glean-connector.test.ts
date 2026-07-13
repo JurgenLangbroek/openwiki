@@ -193,6 +193,86 @@ describe("Glean connector", () => {
     expect(result.message).toMatch(/openwiki auth glean/u);
   });
 
+  test("annotates probed live tools with the read-only policy", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        listTools: () =>
+          Promise.resolve([
+            { description: "Search tenant content", name: "search" },
+            {
+              annotations: { readOnlyHint: true },
+              name: "tenant_catalog",
+            },
+            {
+              description: "Create an announcement",
+              name: "create_announcement",
+            },
+          ]),
+      },
+    });
+
+    const result = await connector.ingest();
+
+    expect(result.status).toBe("success");
+    expect(
+      result.liveTools?.map(({ name, policy }) => ({
+        allowed: policy.allowed,
+        name,
+        rule: policy.rule,
+      })),
+    ).toEqual([
+      {
+        allowed: true,
+        name: "search",
+        rule: "read-shaped-name",
+      },
+      {
+        allowed: true,
+        name: "tenant_catalog",
+        rule: "read-only-annotation",
+      },
+      {
+        allowed: false,
+        name: "create_announcement",
+        rule: "write-shaped",
+      },
+    ]);
+  });
+
+  test("resolves its live MCP config from enabled Glean settings", async () => {
+    await writeGleanConfig({
+      allowedTools: ["chat"],
+      enabled: true,
+      instance: "acme",
+      mcpPath: "/mcp/gateway",
+    });
+    const connector = createGleanConnector();
+
+    await expect(connector.resolveMcpConfig?.()).resolves.toEqual({
+      allowedTools: ["chat"],
+      enabled: true,
+      transport: {
+        headers: {
+          Authorization: "Bearer ${OPENWIKI_GLEAN_ACCESS_TOKEN}",
+        },
+        type: "http",
+        url: "https://acme-be.glean.com/mcp/gateway",
+      },
+    });
+  });
+
+  test("refuses to resolve live MCP config while Glean is disabled", async () => {
+    await writeGleanConfig({ enabled: false, instance: "acme" });
+    const connector = createGleanConnector();
+
+    await expect(connector.resolveMcpConfig?.()).rejects.toThrow(
+      /openwiki auth glean/u,
+    );
+  });
+
   test("writes one normalized artifact for every deterministic stream", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));

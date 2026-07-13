@@ -42,8 +42,8 @@ const definition: ConnectorDefinition = {
     "Fetches web search results with Tavily through the LangChain Tavily integration.",
   displayName: "Web Search",
   id: "web-search",
+  posture: "deterministic",
   requiredEnv: [OPENWIKI_TAVILY_API_KEY_ENV_KEY],
-  supportsAgenticDiscovery: false,
 };
 
 export function createWebSearchConnector(): ConnectorRuntime {
