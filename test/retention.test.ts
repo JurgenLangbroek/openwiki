@@ -509,6 +509,113 @@ describe("raw connector retention", () => {
     ).toBe(false);
   });
 
+  test("stamps every hybrid run only after non-skipped synthesis", async () => {
+    await createTempHome();
+    const { getConnectorStatePath } = await import("../src/openwiki-home.ts");
+    const { readConnectorState, writeConnectorState, writeRawJson } =
+      await import("../src/connectors/io.ts");
+    const { saveOpenWikiOnboardingConfig } =
+      await import("../src/onboarding.ts");
+    const pullRunId = "2026-07-13T00-00-00-000Z";
+    const liveToolRunId = "2026-07-13T00-01-00-000Z";
+    const pullRawPath = await writeRawJson("glean", pullRunId, "items.json", {
+      items: [1],
+    });
+    const liveToolRawPath = await writeRawJson(
+      "glean",
+      liveToolRunId,
+      "mcp-tool-result.json",
+      { result: { items: [2] } },
+    );
+    const unsynthesizedState = {
+      runs: [
+        {
+          at: "2026-07-13T00:01:00.000Z",
+          rawFiles: [liveToolRawPath],
+          runId: liveToolRunId,
+          status: "success" as const,
+          warnings: [],
+        },
+        {
+          at: "2026-07-13T00:00:00.000Z",
+          rawFiles: [pullRawPath],
+          runId: pullRunId,
+          status: "success" as const,
+          warnings: [],
+        },
+      ],
+      version: 1 as const,
+    };
+    await writeConnectorState("glean", unsynthesizedState);
+    await saveOpenWikiOnboardingConfig({
+      sourceInstances: [
+        {
+          connectedAt: "2026-07-01T00:00:00.000Z",
+          connectorId: "glean",
+          id: "glean-primary",
+        },
+      ],
+      sources: {},
+      version: 1,
+    });
+
+    const connector = {
+      backend: "direct-api",
+      description: "Test hybrid Glean",
+      displayName: "Glean",
+      id: "glean",
+      ingest: vi.fn().mockResolvedValue({
+        connectorId: "glean",
+        message: "Pulled fixture",
+        rawFiles: [pullRawPath],
+        runId: pullRunId,
+        statePath: getConnectorStatePath("glean"),
+        status: "success",
+        warnings: [],
+      }),
+      posture: "hybrid",
+      requiredEnv: [],
+    };
+    const runOpenWikiAgent = vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ skipped: true });
+    vi.doMock("../src/agent/index.ts", () => ({
+      createOpenWikiThreadId: () => "hybrid-retention-test-thread",
+      runOpenWikiAgent,
+    }));
+    vi.doMock("../src/connectors/registry.ts", async () => {
+      const actual = await vi.importActual<
+        typeof import("../src/connectors/registry.ts")
+      >("../src/connectors/registry.ts");
+
+      return {
+        ...actual,
+        createConnectorRegistry: () => ({ glean: connector }),
+      };
+    });
+    const { runOpenWikiIngestion } = await import("../src/ingestion.ts");
+
+    await runOpenWikiIngestion("ignored", { target: "glean" });
+
+    const synthesizedRuns = (await readConnectorState("glean")).runs;
+    expect(synthesizedRuns).toHaveLength(2);
+    expect(
+      synthesizedRuns?.every(
+        ({ synthesizedAt }) => typeof synthesizedAt === "string",
+      ),
+    ).toBe(true);
+
+    await writeConnectorState("glean", unsynthesizedState);
+    await runOpenWikiIngestion("ignored", { target: "glean" });
+
+    const skippedRuns = (await readConnectorState("glean")).runs;
+    expect(skippedRuns).toHaveLength(2);
+    expect(skippedRuns?.every(({ synthesizedAt }) => !synthesizedAt)).toBe(
+      true,
+    );
+  });
+
   test("stamps agentic connector runs without a deterministic pull", async () => {
     const openWikiHome = await createTempHome();
     const { readConnectorState, writeConnectorState, writeRawJson } =

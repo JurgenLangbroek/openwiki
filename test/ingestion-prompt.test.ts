@@ -204,14 +204,14 @@ describe("source synthesis policy", () => {
 
 describe("synthesis stamping", () => {
   test("stamps every unsynthesized run after hybrid synthesis", () => {
-    expect(resolveSynthesisStamp("hybrid", { runId: "pull-run" })).toBe(
-      "all-unsynthesized",
-    );
-    expect(resolveSynthesisStamp("deterministic", { runId: "pull-run" })).toBe(
-      "run",
-    );
-    expect(resolveSynthesisStamp("agentic", undefined)).toBe(
-      "all-unsynthesized",
-    );
+    expect(resolveSynthesisStamp("hybrid", { runId: "pull-run" })).toEqual({
+      kind: "all-unsynthesized",
+    });
+    expect(
+      resolveSynthesisStamp("deterministic", { runId: "pull-run" }),
+    ).toEqual({ kind: "run", runId: "pull-run" });
+    expect(resolveSynthesisStamp("agentic", undefined)).toEqual({
+      kind: "all-unsynthesized",
+    });
   });
 });
