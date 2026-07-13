@@ -19,6 +19,9 @@ import {
   normalizeModelId,
   OPENAI_CHATGPT_EMAIL_ENV_KEY,
   OPENAI_CHATGPT_PLAN_ENV_KEY,
+  OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY,
+  OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+  OPENWIKI_GLEAN_INSTANCE_ENV_KEY,
   OPENWIKI_GOOGLE_CLIENT_ID_ENV_KEY,
   OPENWIKI_GOOGLE_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
@@ -43,6 +46,10 @@ import {
 import type { AuthProviderId } from "./auth/types.js";
 import type { OpenWikiRunMode } from "./commands.js";
 import type { ConnectorId } from "./connectors/types.js";
+import {
+  GleanBackendResolutionError,
+  resolveGleanBackendUrl,
+} from "./connectors/sources/glean-backend.js";
 import { configHasExplorableSource } from "./exploration-eligibility.js";
 import { getConnectorConfigPath } from "./openwiki-home.js";
 import { getOpenWikiEnvPath, saveOpenWikiEnv } from "./env.js";
@@ -189,6 +196,7 @@ const ONBOARDING_TEMPLATES = [
     sourceIds: [
       "git-repo",
       "google",
+      "glean",
       "notion",
       "web-search",
       "hackernews",
@@ -196,6 +204,7 @@ const ONBOARDING_TEMPLATES = [
     ],
     suggestedSources: [
       "Gmail",
+      "Glean (work context)",
       "Notion",
       "Web Search (Tavily)",
       "Hacker News",
@@ -278,6 +287,27 @@ const SOURCE_OPTIONS = [
         envKey: OPENWIKI_GOOGLE_CLIENT_SECRET_ENV_KEY,
         label: "Google OAuth client secret",
         secret: true,
+      },
+    ],
+  },
+  {
+    authProvider: "glean",
+    displayName: "Glean (work context)",
+    examples: [
+      "Track active projects, teams, and decisions across my work context.",
+      "Follow important tickets and docs connected to current work.",
+    ],
+    id: "glean",
+    instructions: [
+      "Enter your work email so OpenWiki can resolve your company's Glean backend from its domain.",
+      "No client ID or client secret is needed because OpenWiki self-registers via OAuth.",
+      "Approve access in the browser window when it opens.",
+    ],
+    secretInputs: [
+      {
+        envKey: OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+        label: "Work email",
+        secret: false,
       },
     ],
   },
@@ -375,6 +405,26 @@ export function needsCredentialSetup(
   return mode === "code"
     ? !isRepositoryCodeOnboardingCompleteSync(getDefaultCodeRepoRootPath())
     : !isOpenWikiOnboardingCompleteSync();
+}
+
+export function validateGleanWorkEmail(
+  email: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  try {
+    resolveGleanBackendUrl({
+      backendBaseUrl: env[OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY],
+      email: email.trim(),
+      instance: env[OPENWIKI_GLEAN_INSTANCE_ENV_KEY],
+    });
+    return null;
+  } catch (error) {
+    if (error instanceof GleanBackendResolutionError) {
+      return getGleanBackendResolutionRetryMessage(error);
+    }
+
+    throw error;
+  }
 }
 
 /**
@@ -1361,6 +1411,17 @@ export function InitSetup({
         return;
       }
 
+      if (
+        selectedSource.id === "glean" &&
+        currentSecretInput.envKey === OPENWIKI_GLEAN_EMAIL_ENV_KEY
+      ) {
+        const validationError = validateGleanWorkEmail(trimmedInput);
+        if (validationError) {
+          setError(validationError);
+          return;
+        }
+      }
+
       const nextSecretValues = {
         ...sourceState.secretValues,
         ...(trimmedInput.length > 0
@@ -1729,11 +1790,35 @@ export function InitSetup({
           silent: true,
         });
         await configureAuthProvider(authResult.provider, { force: false });
+
+        if (selectedSource.id === "glean") {
+          const email = process.env[OPENWIKI_GLEAN_EMAIL_ENV_KEY]?.trim();
+          if (email) {
+            setSourceState((state) => ({
+              ...state,
+              connectorConfig: { email },
+            }));
+          }
+        }
       }
 
       setInput("");
       setStep("source-description");
     } catch (authError) {
+      if (
+        selectedSource.id === "glean" &&
+        authError instanceof GleanBackendResolutionError
+      ) {
+        const emailInputIndex = selectedSource.secretInputs.findIndex(
+          (secretInput) => secretInput.envKey === OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+        );
+        setError(getGleanBackendResolutionRetryMessage(authError));
+        setSecretInputIndex(emailInputIndex === -1 ? 0 : emailInputIndex);
+        setInput(process.env[OPENWIKI_GLEAN_EMAIL_ENV_KEY] ?? "");
+        setStep("source-secret");
+        return;
+      }
+
       setError(getErrorMessage(authError));
     } finally {
       setIsAuthRunning(false);
@@ -2561,7 +2646,7 @@ function Prompt({
               prefix={`${secretInput.envKey}${
                 secretInput.optional ? " optional" : ""
               }=`}
-              secret
+              secret={secretInput.secret !== false}
               value={input}
             />
             <Text color="gray">
@@ -3549,7 +3634,7 @@ function getSourceMenuLabel(
     : `Add ${source.displayName}`;
 }
 
-function getTemplateSourceOptions(
+export function getTemplateSourceOptions(
   templateId: string | undefined,
 ): readonly SourceSetupOption[] {
   const template =
@@ -3822,4 +3907,10 @@ function getStaticSourceConfig(
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getGleanBackendResolutionRetryMessage(
+  error: GleanBackendResolutionError,
+): string {
+  return `${error.message} Please re-enter your work email and try again.`;
 }

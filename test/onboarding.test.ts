@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 const originalHome = process.env.HOME;
+const originalOpenWikiHome = process.env.OPENWIKI_HOME;
 const tempHomes: string[] = [];
 
 async function createTempHome(): Promise<string> {
@@ -15,6 +16,7 @@ async function createTempHome(): Promise<string> {
 async function loadOnboardingModule(home: string) {
   vi.resetModules();
   process.env.HOME = home;
+  process.env.OPENWIKI_HOME = home;
   return await import("../src/onboarding.ts");
 }
 
@@ -27,11 +29,72 @@ afterEach(async () => {
     process.env.HOME = originalHome;
   }
 
+  if (originalOpenWikiHome === undefined) {
+    delete process.env.OPENWIKI_HOME;
+  } else {
+    process.env.OPENWIKI_HOME = originalOpenWikiHome;
+  }
+
   await Promise.all(
     tempHomes
       .splice(0)
       .map((home) => rm(home, { force: true, recursive: true })),
   );
+});
+
+describe("OpenWiki onboarding sources", () => {
+  test("round-trips a Glean source instance with its connector config", async () => {
+    const home = await createTempHome();
+    const onboarding = await loadOnboardingModule(home);
+    const gleanSource = {
+      connectedAt: "2026-07-13T12:00:00.000Z",
+      connectorConfig: { email: "j@acme.example" },
+      connectorId: "glean" as const,
+      id: "glean-1",
+      ingestionGoal: "Track projects, teams, decisions, tickets, and docs.",
+      name: "Glean work context",
+    };
+
+    await onboarding.saveOpenWikiOnboardingConfig({
+      sourceInstances: [gleanSource],
+      sources: {},
+      version: 1,
+    });
+
+    const saved = await onboarding.readOpenWikiOnboardingConfig();
+    expect(saved.sourceInstances).toEqual([gleanSource]);
+  });
+
+  test("normalizes a legacy Glean source into a source instance", async () => {
+    const home = await createTempHome();
+    const onboarding = await loadOnboardingModule(home);
+
+    await writeFile(
+      onboarding.getOpenWikiOnboardingPath(),
+      `${JSON.stringify({
+        sources: {
+          glean: {
+            connectedAt: "2026-07-13T12:00:00.000Z",
+            connectorConfig: { email: "j@acme.example" },
+            ingestionGoal: "Track work decisions and supporting docs.",
+          },
+        },
+        version: 1,
+      })}\n`,
+      "utf8",
+    );
+
+    const saved = await onboarding.readOpenWikiOnboardingConfig();
+    expect(saved.sourceInstances).toEqual([
+      {
+        connectedAt: "2026-07-13T12:00:00.000Z",
+        connectorConfig: { email: "j@acme.example" },
+        connectorId: "glean",
+        id: "glean",
+        ingestionGoal: "Track work decisions and supporting docs.",
+      },
+    ]);
+  });
 });
 
 describe("OpenWiki onboarding instructions", () => {
