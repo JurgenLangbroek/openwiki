@@ -52,6 +52,25 @@ async function writeGleanConfig(
   );
 }
 
+function createEmptyGleanTransport() {
+  return {
+    fetchCalendar: () => Promise.resolve({ results: [] }),
+    fetchFeed: () => Promise.resolve({ items: [] }),
+    fetchMessages: () => Promise.resolve({ results: [] }),
+    fetchMyWork: () => Promise.resolve({ results: [] }),
+    listTools: () => Promise.resolve([]),
+  };
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
+  const value = JSON.parse(text) as unknown;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Expected a JSON object");
+  }
+
+  return value as Record<string, unknown>;
+}
+
 beforeEach(async () => {
   openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-glean-"));
   process.env.OPENWIKI_HOME = openWikiHome;
@@ -61,6 +80,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
@@ -172,17 +192,49 @@ describe("Glean connector", () => {
     expect(result.message).toMatch(/openwiki auth glean/u);
   });
 
-  test("writes the probe and a normalized feed artifact with persisted identities", async () => {
+  test("writes one normalized artifact for every deterministic stream", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
     await writeGleanConfig({
       enabled: true,
       instance: "acme",
       mcpPath: "/mcp/gateway",
+      windowHours: 48,
     });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "secret-refresh-token";
 
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
+        fetchCalendar: ({ backendUrl }) => {
+          expect(backendUrl).toBe("https://acme-be.glean.com");
+          return Promise.resolve({
+            relatedDocuments: [
+              {
+                datasource: "drive",
+                id: "activity-document-1",
+                title: "Atlas decision record",
+                url: "https://app.glean.com/go/activity-document-1",
+              },
+            ],
+            results: [
+              {
+                busyEvents: [
+                  {
+                    endTime: "2026-07-16T11:00:00.000Z",
+                    eventId: "busy-event-1",
+                    name: "Atlas review",
+                    startTime: "2026-07-16T10:00:00.000Z",
+                  },
+                ],
+                email: "owner@acme.example",
+                name: "OpenWiki Owner",
+                obfuscatedId: "person-obfuscated-1",
+              },
+            ],
+          });
+        },
         fetchFeed: ({ backendUrl }) => {
           expect(backendUrl).toBe("https://acme-be.glean.com");
           return Promise.resolve({
@@ -207,6 +259,45 @@ describe("Glean connector", () => {
             ],
           });
         },
+        fetchMessages: ({ backendUrl, sinceDate }) => {
+          expect({ backendUrl, sinceDate }).toEqual({
+            backendUrl: "https://acme-be.glean.com",
+            sinceDate: "2026-07-10",
+          });
+          return Promise.resolve({
+            results: [
+              {
+                app: "slack",
+                document: {
+                  datasource: "slack-datasource",
+                  id: "message-thread-1",
+                  title: "Atlas launch thread",
+                  url: "https://app.glean.com/go/message-thread-1",
+                },
+                snippets: [{ text: "Ship it on Tuesday." }],
+              },
+            ],
+          });
+        },
+        fetchMyWork: ({ backendUrl, sinceDate }) => {
+          expect({ backendUrl, sinceDate }).toEqual({
+            backendUrl: "https://acme-be.glean.com",
+            sinceDate: "2026-07-10",
+          });
+          return Promise.resolve({
+            results: [
+              {
+                document: {
+                  datasource: "drive",
+                  id: "owned-document-1",
+                  metadata: { updateTime: "2026-07-12T09:00:00.000Z" },
+                  title: "Atlas launch plan",
+                  url: "https://app.glean.com/go/owned-document-1",
+                },
+              },
+            ],
+          });
+        },
         listTools: ({ mcpUrl }) => {
           expect(mcpUrl).toBe("https://acme-be.glean.com/mcp/gateway");
           return Promise.resolve([
@@ -225,11 +316,14 @@ describe("Glean connector", () => {
 
     expect(result.status).toBe("success");
     expect(result.message).toBe(
-      "Probed 2 MCP tool(s) at https://acme-be.glean.com; pulled 1 feed item(s) (1 new).",
+      "Probed 2 MCP tool(s) at https://acme-be.glean.com; pulled feed 1 new, my-work 1 new, messages 1 new, calendar 2 new.",
     );
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
       "feed.json",
+      "my-work.json",
+      "messages.json",
+      "calendar.json",
     ]);
 
     const probeText = await readFile(result.rawFiles[0], "utf8");
@@ -276,6 +370,69 @@ describe("Glean connector", () => {
     expect(feedText).not.toContain("secret-refresh-token");
     expect(feedText).not.toContain("Authorization");
 
+    const artifacts: Record<string, Record<string, unknown>> = {};
+    for (const file of result.rawFiles) {
+      artifacts[path.basename(file)] = parseJsonObject(
+        await readFile(file, "utf8"),
+      );
+    }
+    expect(artifacts["my-work.json"]).toMatchObject({
+      counts: { deduplicated: 0, fetched: 1, new: 1, skipped: 0 },
+      items: [
+        {
+          datasource: "drive",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "owned-document-1",
+          title: "Atlas launch plan",
+          updatedAt: "2026-07-12T09:00:00.000Z",
+          url: "https://app.glean.com/go/owned-document-1",
+        },
+      ],
+      stream: "my-work",
+      window: { sinceDate: "2026-07-10", windowHours: 48 },
+    });
+    expect(artifacts["messages.json"]).toMatchObject({
+      counts: { deduplicated: 0, fetched: 1, new: 1, skipped: 0 },
+      items: [
+        {
+          app: "slack",
+          datasource: "slack-datasource",
+          id: "message-thread-1",
+          snippet: "Ship it on Tuesday.",
+          url: "https://app.glean.com/go/message-thread-1",
+        },
+      ],
+      stream: "messages",
+      window: { sinceDate: "2026-07-10", windowHours: 48 },
+    });
+    expect(artifacts["calendar.json"]).toMatchObject({
+      counts: { deduplicated: 0, fetched: 2, new: 2, skipped: 0 },
+      items: [
+        {
+          endTime: "2026-07-16T11:00:00.000Z",
+          fetchedAt: "2026-07-13T12:00:00.000Z",
+          id: "busy-event-1",
+          kind: "busy-event",
+          name: "Atlas review",
+          startTime: "2026-07-16T10:00:00.000Z",
+        },
+        {
+          datasource: "drive",
+          id: "activity-document-1",
+          kind: "document-activity",
+          title: "Atlas decision record",
+          url: "https://app.glean.com/go/activity-document-1",
+        },
+      ],
+      person: {
+        email: "owner@acme.example",
+        name: "OpenWiki Owner",
+        obfuscatedId: "person-obfuscated-1",
+      },
+      stream: "calendar",
+      window: { days: 7 },
+    });
+
     const stateText = await readFile(
       path.join(openWikiHome, "connectors", "glean", "state.json"),
       "utf8",
@@ -285,14 +442,26 @@ describe("Glean connector", () => {
       seenIds: Record<string, string[]>;
     };
     expect(state.seenIds.feed).toEqual(["document-123"]);
+    expect(state.seenIds["my-work"]).toEqual(["owned-document-1"]);
+    expect(state.seenIds.messages).toEqual(["message-thread-1"]);
+    expect(state.seenIds.calendar).toEqual([
+      "busy-event-1",
+      "activity-document-1",
+    ]);
     expect(state.runs[0]).toMatchObject({
       rawFiles: result.rawFiles,
       runId: result.runId,
       status: "success",
     });
-    expect(stateText).not.toContain("secret-access-token");
-    expect(stateText).not.toContain("secret-refresh-token");
-    expect(stateText).not.toContain("Authorization");
+    for (const file of [
+      ...result.rawFiles,
+      path.join(openWikiHome, "connectors", "glean", "state.json"),
+    ]) {
+      const text = await readFile(file, "utf8");
+      expect(text).not.toContain("secret-access-token");
+      expect(text).not.toContain("secret-refresh-token");
+      expect(text).not.toContain("Authorization");
+    }
   });
 
   test("uses the default MCP path for the tenant probe", async () => {
@@ -301,6 +470,7 @@ describe("Glean connector", () => {
     let probedUrl = "";
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.resolve({ items: [] }),
         listTools: ({ mcpUrl }) => {
           probedUrl = mcpUrl;
@@ -315,7 +485,9 @@ describe("Glean connector", () => {
     expect(probedUrl).toBe("https://acme-be.glean.com/mcp/default");
   });
 
-  test("uses the OAuth token for the default MCP probe and feed request", async () => {
+  test("uses the OAuth token and documented bodies for every default request", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const requests: {
@@ -337,6 +509,12 @@ describe("Glean connector", () => {
         });
         if (url.endsWith("/rest/api/v1/feed")) {
           return Promise.resolve(Response.json({ items: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/search")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/people")) {
+          return Promise.resolve(Response.json({ results: [] }));
         }
         const body = typeof init?.body === "string" ? init.body : "{}";
         const request = JSON.parse(body) as { id?: number; method?: string };
@@ -361,7 +539,12 @@ describe("Glean connector", () => {
     const result = await createGleanConnector().ingest();
 
     expect(result.status).toBe("success");
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(8);
+    expect(
+      requests.every(
+        ({ authorization }) => authorization === "Bearer secret-access-token",
+      ),
+    ).toBe(true);
     const mcpRequests = requests.filter(({ url }) =>
       url.endsWith("/mcp/default"),
     );
@@ -381,6 +564,62 @@ describe("Glean connector", () => {
     });
     expect(JSON.parse(feedRequest?.body ?? "{}")).toEqual({
       categories: ["RECENT", "MENTION", "EVENT", "TASK", "FOLLOW_UP"],
+    });
+
+    const searchRequests = requests.filter(({ url }) =>
+      url.endsWith("/rest/api/v1/search"),
+    );
+    expect(searchRequests).toHaveLength(3);
+    expect(
+      searchRequests.map(({ body }) => JSON.parse(body ?? "{}") as unknown),
+    ).toEqual([
+      {
+        pageSize: 100,
+        query: 'owner:"me"',
+        requestOptions: {
+          facetFilters: [
+            {
+              fieldName: "last_updated_at",
+              values: [{ relationType: "GT", value: "2026-07-10" }],
+            },
+          ],
+        },
+      },
+      {
+        pageSize: 100,
+        query: 'from:"me"',
+        requestOptions: {
+          facetFilters: [
+            {
+              fieldName: "last_updated_at",
+              values: [{ relationType: "GT", value: "2026-07-10" }],
+            },
+          ],
+        },
+      },
+      {
+        pageSize: 100,
+        query: 'from:"me" app:slack',
+        requestOptions: {
+          facetFilters: [
+            {
+              fieldName: "last_updated_at",
+              values: [{ relationType: "GT", value: "2026-07-10" }],
+            },
+          ],
+        },
+      },
+    ]);
+    const peopleRequest = requests.find(({ url }) =>
+      url.endsWith("/rest/api/v1/people"),
+    );
+    expect(peopleRequest).toMatchObject({
+      authorization: "Bearer secret-access-token",
+      method: "POST",
+      url: "https://acme-be.glean.com/rest/api/v1/people",
+    });
+    expect(JSON.parse(peopleRequest?.body ?? "{}")).toEqual({
+      includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
     });
   });
 
@@ -460,11 +699,94 @@ describe("Glean connector", () => {
     ]);
   });
 
+  test("refreshes once and retries the default people request after a 401", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "expired-access-token";
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const peopleAuthorizations: (string | null)[] = [];
+    let tokenRefreshes = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+
+        if (url.endsWith("/rest/api/v1/feed")) {
+          return Promise.resolve(Response.json({ items: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/search")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/people")) {
+          peopleAuthorizations.push(
+            new Headers(init?.headers).get("Authorization"),
+          );
+          return Promise.resolve(
+            peopleAuthorizations.length === 1
+              ? new Response(null, { status: 401 })
+              : Response.json({ results: [] }),
+          );
+        }
+        if (url.includes("oauth-protected-resource")) {
+          return Promise.resolve(
+            Response.json({
+              authorization_servers: ["https://auth.acme.example"],
+            }),
+          );
+        }
+        if (
+          url.includes("oauth-authorization-server") ||
+          url.includes("openid-configuration")
+        ) {
+          return Promise.resolve(
+            Response.json({
+              token_endpoint: "https://auth.acme.example/token",
+            }),
+          );
+        }
+        if (url === "https://auth.acme.example/token") {
+          tokenRefreshes += 1;
+          return Promise.resolve(
+            Response.json({
+              access_token: "refreshed-access-token",
+              expires_in: 3600,
+              refresh_token: "refresh-token",
+              token_type: "Bearer",
+            }),
+          );
+        }
+
+        const body = typeof init?.body === "string" ? init.body : "{}";
+        const request = JSON.parse(body) as { id?: number; method?: string };
+        if (request.id === undefined) {
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        return Promise.resolve(
+          Response.json({
+            id: request.id,
+            jsonrpc: "2.0",
+            result: request.method === "tools/list" ? { tools: [] } : {},
+          }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    expect(tokenRefreshes).toBe(1);
+    expect(peopleAuthorizations).toEqual([
+      "Bearer expired-access-token",
+      "Bearer refreshed-access-token",
+    ]);
+  });
+
   test("returns an authentication hint when the tenant probe fails", async () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.resolve({ items: [] }),
         listTools: () => Promise.reject(new Error("401 Unauthorized")),
       },
@@ -479,6 +801,7 @@ describe("Glean connector", () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const transport = {
+      ...createEmptyGleanTransport(),
       fetchFeed: () =>
         Promise.resolve({
           items: [
@@ -521,11 +844,181 @@ describe("Glean connector", () => {
     expect(state.seenIds.feed).toEqual(["mention-1"]);
   });
 
+  test("deduplicates every stream across immediately repeated runs", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const transport = {
+      fetchCalendar: () =>
+        Promise.resolve({
+          results: [
+            {
+              busyEvents: [
+                {
+                  endTime: "2026-07-13T10:30:00.000Z",
+                  name: "Composite identity event",
+                  startTime: "2026-07-13T10:00:00.000Z",
+                },
+              ],
+            },
+          ],
+        }),
+      fetchFeed: () =>
+        Promise.resolve({
+          items: [
+            {
+              id: "feed-repeat-1",
+              url: "https://app.glean.com/go/feed-repeat-1",
+            },
+          ],
+        }),
+      fetchMessages: () =>
+        Promise.resolve({
+          results: [
+            {
+              id: "message-repeat-1",
+              url: "https://app.glean.com/go/message-repeat-1",
+            },
+          ],
+        }),
+      fetchMyWork: () =>
+        Promise.resolve({
+          results: [
+            {
+              id: "work-repeat-1",
+              url: "https://app.glean.com/go/work-repeat-1",
+            },
+          ],
+        }),
+      listTools: () => Promise.resolve([]),
+    };
+    const connector = createGleanConnector({ transport });
+
+    const first = await connector.ingest();
+    const firstState = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as { seenIds: Record<string, string[]> };
+    const second = await connector.ingest();
+    const secondArtifacts = await Promise.all(
+      second.rawFiles
+        .filter((file) => path.basename(file) !== "probe.json")
+        .map(
+          async (file) =>
+            JSON.parse(await readFile(file, "utf8")) as {
+              counts: Record<string, number>;
+              items: unknown[];
+              stream: string;
+            },
+        ),
+    );
+
+    expect(first.status).toBe("success");
+    expect(second.status).toBe("success");
+    expect(secondArtifacts.map(({ stream }) => stream)).toEqual([
+      "feed",
+      "my-work",
+      "messages",
+      "calendar",
+    ]);
+    for (const artifact of secondArtifacts) {
+      expect(artifact.counts).toMatchObject({
+        deduplicated: 1,
+        fetched: 1,
+        new: 0,
+        skipped: 0,
+      });
+      expect(artifact.items).toEqual([]);
+    }
+    const secondState = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as { seenIds: Record<string, string[]> };
+    expect(secondState.seenIds).toEqual(firstState.seenIds);
+    expect(secondState.seenIds["my-work"]).toEqual(["work-repeat-1"]);
+    expect(secondState.seenIds.calendar).toEqual([
+      "busy:2026-07-13T10:00:00.000Z/2026-07-13T10:30:00.000Z/Composite identity event",
+    ]);
+  });
+
+  test("uses an overlapping date window and filters parseable distant events", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const sinceDates: string[] = [];
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchCalendar: () =>
+          Promise.resolve({
+            results: [
+              {
+                busyEvents: [
+                  {
+                    endTime: "2026-07-23T13:00:00.000Z",
+                    eventId: "too-far",
+                    startTime: "2026-07-23T12:00:00.000Z",
+                  },
+                  {
+                    endTime: "2026-07-16T13:00:00.000Z",
+                    eventId: "nearby",
+                    startTime: "2026-07-16T12:00:00.000Z",
+                  },
+                  {
+                    endTime: "later-ish",
+                    eventId: "unparseable",
+                    startTime: "sometime soon",
+                  },
+                ],
+              },
+            ],
+          }),
+        fetchMessages: ({ sinceDate }) => {
+          sinceDates.push(sinceDate);
+          return Promise.resolve({ results: [] });
+        },
+        fetchMyWork: ({ sinceDate }) => {
+          sinceDates.push(sinceDate);
+          return Promise.resolve({ results: [] });
+        },
+      },
+    });
+
+    const result = await connector.ingest();
+    const calendar = JSON.parse(
+      await readFile(
+        result.rawFiles.find(
+          (file) => path.basename(file) === "calendar.json",
+        )!,
+        "utf8",
+      ),
+    ) as {
+      counts: Record<string, number>;
+      items: { id: string }[];
+      window: Record<string, number>;
+    };
+
+    expect(sinceDates).toEqual(["2026-07-10", "2026-07-10"]);
+    expect(calendar).toMatchObject({
+      counts: { fetched: 3, new: 2, skipped: 1 },
+      window: { days: 7 },
+    });
+    expect(calendar.items.map(({ id }) => id)).toEqual([
+      "nearby",
+      "unparseable",
+    ]);
+  });
+
   test("omits optional feed fields that the tenant response does not provide", async () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
         fetchFeed: () =>
           Promise.resolve({
             categories: [
@@ -564,12 +1057,76 @@ describe("Glean connector", () => {
     ]);
   });
 
-  test("returns actionable authentication guidance when the feed pull fails", async () => {
+  test("degrades a feed failure while the other streams succeed", async () => {
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.reject(new Error("401 Unauthorized")),
+        listTools: () => Promise.resolve([{ name: "search" }]),
+      },
+    });
+
+    const result = await connector.ingest();
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toEqual([
+      "Glean feed pull failed: 401 Unauthorized",
+    ]);
+    expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
+      "probe.json",
+      "my-work.json",
+      "messages.json",
+      "calendar.json",
+    ]);
+  });
+
+  test("records a my-work warning while preserving other stream artifacts", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const connector = createGleanConnector({
+      transport: {
+        ...createEmptyGleanTransport(),
+        fetchMyWork: () => Promise.reject(new Error("tenant search failed")),
+        listTools: () => Promise.resolve([{ name: "search" }]),
+      },
+    });
+
+    const result = await connector.ingest();
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toEqual([
+      "Glean my-work pull failed: tenant search failed",
+    ]);
+    expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
+      "probe.json",
+      "feed.json",
+      "messages.json",
+      "calendar.json",
+    ]);
+    const state = JSON.parse(
+      await readFile(
+        path.join(openWikiHome, "connectors", "glean", "state.json"),
+        "utf8",
+      ),
+    ) as { runs: { status: string; warnings: string[] }[] };
+    expect(state.runs[0]).toMatchObject({
+      status: "success",
+      warnings: result.warnings,
+    });
+  });
+
+  test("returns actionable authentication guidance when all evidence streams fail", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const failure = new Error("401 Unauthorized");
+    const connector = createGleanConnector({
+      transport: {
+        fetchCalendar: () => Promise.reject(failure),
+        fetchFeed: () => Promise.reject(failure),
+        fetchMessages: () => Promise.reject(failure),
+        fetchMyWork: () => Promise.reject(failure),
         listTools: () => Promise.resolve([{ name: "search" }]),
       },
     });
@@ -581,6 +1138,12 @@ describe("Glean connector", () => {
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
     ]);
+    expect(result.warnings).toEqual([
+      "Glean feed pull failed: 401 Unauthorized",
+      "Glean my-work pull failed: 401 Unauthorized",
+      "Glean messages pull failed: 401 Unauthorized",
+      "Glean calendar pull failed: 401 Unauthorized",
+    ]);
   });
 
   test("keeps the probe successful when the tenant feed endpoint is unavailable", async () => {
@@ -591,6 +1154,7 @@ describe("Glean connector", () => {
     });
     const connector = createGleanConnector({
       transport: {
+        ...createEmptyGleanTransport(),
         fetchFeed: () => Promise.reject(unavailableError),
         listTools: () => Promise.resolve([{ name: "search" }]),
       },
@@ -601,6 +1165,9 @@ describe("Glean connector", () => {
     expect(result.status).toBe("success");
     expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
+      "my-work.json",
+      "messages.json",
+      "calendar.json",
     ]);
     expect(result.warnings.join(" ")).toMatch(/feed endpoint.*unavailable/iu);
 
