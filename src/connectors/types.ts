@@ -50,6 +50,7 @@ export type ConnectorIngestResult = {
 };
 
 export type ConnectorRuntime = ConnectorDefinition & {
+  discoverLiveTools?: () => Promise<ConnectorIngestResult>;
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
   mcpEndpoints?: McpEndpointId[];
   resolveMcpConfig?: (endpoint?: McpEndpointId) => Promise<McpConnectorConfig>;

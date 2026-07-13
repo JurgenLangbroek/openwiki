@@ -39,6 +39,14 @@ export type CliCommand =
       url: string | null;
     }
   | {
+      kind: "explore";
+      exitCode: 0;
+      modelId: string | null;
+      print: boolean;
+      scheduledOnly: boolean;
+      target: IngestionTarget;
+    }
+  | {
       kind: "ingest";
       exitCode: 0;
       modelId: string | null;
@@ -199,21 +207,22 @@ export function parseCommand(argv: string[]): CliCommand {
     };
   }
 
-  if (argv[0] === "ingest") {
-    const target = parseIngestionTarget(argv[1] ?? "all");
+  if (argv[0] === "explore" || argv[0] === "ingest") {
+    const kind = argv[0];
+    const hasTarget = argv[1] !== undefined && !argv[1].startsWith("-");
+    const target = parseIngestionTarget(hasTarget ? (argv[1] ?? "all") : "all");
     if (!target) {
       return {
         kind: "error",
         exitCode: 1,
-        message:
-          "Usage: openwiki ingest <source|source-instance|all> [--print] [--modelId <id>]",
+        message: `Usage: openwiki ${kind} <source|source-instance|all> [--print] [--scheduled] [--modelId <id>]`,
       };
     }
 
     let modelId: string | null = null;
     let print = false;
     let scheduledOnly = false;
-    const optionArgs = argv.slice(2);
+    const optionArgs = argv.slice(hasTarget ? 2 : 1);
     for (let index = 0; index < optionArgs.length; index += 1) {
       const arg = optionArgs[index];
 
@@ -269,12 +278,12 @@ export function parseCommand(argv: string[]): CliCommand {
       return {
         kind: "error",
         exitCode: 1,
-        message: `Unknown option for ingest: ${arg}`,
+        message: `Unknown option for ${kind}: ${arg}`,
       };
     }
 
     return {
-      kind: "ingest",
+      kind,
       exitCode: 0,
       modelId,
       print,
@@ -582,6 +591,7 @@ export const helpContent: HelpContent = {
     "openwiki auth <provider>",
     "openwiki auth configure <provider> [--force]",
     "openwiki auth tools <provider>",
+    "openwiki explore <source|source-instance|all>",
     "openwiki ingest <source|source-instance|all>",
     "openwiki cron list",
     "openwiki cron pause <source|all>",
@@ -617,6 +627,11 @@ export const helpContent: HelpContent = {
     {
       label: "openwiki auth tools <provider>",
       description: "List available MCP tools for a configured auth provider.",
+    },
+    {
+      label: "openwiki explore <source|source-instance|all>",
+      description:
+        "Work the Brain Wiki open-questions queue using one explorable connector, one source instance, or all eligible sources.",
     },
     {
       label: "openwiki ingest <source|source-instance|all>",
@@ -693,6 +708,8 @@ export const helpContent: HelpContent = {
     "openwiki ingest all",
     "openwiki ingest web-search",
     "openwiki ingest web-search-2",
+    "openwiki explore all",
+    "openwiki explore glean",
     "openwiki cron list",
     "openwiki cron pause web-search",
     "openwiki cron resume web-search",

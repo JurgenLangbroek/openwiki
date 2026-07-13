@@ -5,12 +5,24 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { CronExpressionParser } from "cron-parser";
 import cronstrue from "cronstrue";
+import { configHasExplorableSource } from "./exploration-eligibility.js";
 import { ensureOpenWikiHome, getOpenWikiHomeDir } from "./openwiki-home.js";
 import type { ConnectorId } from "./connectors/types.js";
-import type { OpenWikiOnboardingConfig } from "./onboarding.js";
+import type {
+  OnboardingSourceScheduleConfig,
+  OpenWikiOnboardingConfig,
+} from "./onboarding.js";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_FIRST_HOUR = 2;
+export const DEFAULT_EXPLORATION_CRON = "0 3 * * 1";
+
+export type ScheduledAgentKind = "exploration" | "ingestion";
+
+export type ScheduledAgentResume = {
+  expression: string;
+  kind: ScheduledAgentKind;
+};
 
 export type CronValidationResult =
   | {
@@ -124,12 +136,46 @@ export function getSuggestedCronExpression(
   );
 }
 
+export function getSuggestedExplorationCronExpression(
+  config: OpenWikiOnboardingConfig,
+): string {
+  return config.explorationSchedule?.expression ?? DEFAULT_EXPLORATION_CRON;
+}
+
 export async function installConnectorSchedule({
-  connectorId,
   cronExpression,
   cwd,
 }: {
-  connectorId: ConnectorId;
+  cronExpression: string;
+  cwd: string;
+}): Promise<ScheduleInstallResult> {
+  return await installSchedule({
+    agentKind: "ingestion",
+    cronExpression,
+    cwd,
+  });
+}
+
+export async function installExplorationSchedule({
+  cronExpression,
+  cwd,
+}: {
+  cronExpression: string;
+  cwd: string;
+}): Promise<ScheduleInstallResult> {
+  return await installSchedule({
+    agentKind: "exploration",
+    cronExpression,
+    cwd,
+  });
+}
+
+async function installSchedule({
+  agentKind,
+  cronExpression,
+  cwd,
+}: {
+  agentKind: ScheduledAgentKind;
   cronExpression: string;
   cwd: string;
 }): Promise<ScheduleInstallResult> {
@@ -158,11 +204,10 @@ export async function installConnectorSchedule({
     };
   }
 
-  void connectorId;
-  const label = getLaunchAgentLabel();
   const launchAgentsDir = getLaunchAgentsDir();
   const logsDir = path.join(getOpenWikiHomeDir(), "logs");
-  const plistPath = getLaunchAgentPath();
+  const plistPath = getLaunchAgentPath(agentKind);
+  const agentConfig = getScheduledAgentConfig(agentKind);
 
   await ensureOpenWikiHome();
   await mkdir(launchAgentsDir, { recursive: true, mode: 0o700 });
@@ -171,9 +216,11 @@ export async function installConnectorSchedule({
     plistPath,
     createLaunchAgentPlist({
       calendarInterval,
+      agentKind,
+      cliPath: process.argv[1] ? path.resolve(process.argv[1]) : "",
       cwd,
-      label,
-      logPath: path.join(logsDir, "ingestion.schedule.log"),
+      logPath: path.join(logsDir, agentConfig.logName),
+      nodePath: process.execPath,
     }),
     {
       encoding: "utf8",
@@ -182,7 +229,7 @@ export async function installConnectorSchedule({
   );
   await chmod(plistPath, 0o600);
 
-  await unloadLaunchAgent();
+  await unloadLaunchAgent(agentKind);
   const launchdDomain = getLaunchdDomain();
   await execFileAsync("launchctl", ["bootstrap", launchdDomain, plistPath]);
 
@@ -196,41 +243,104 @@ export async function installConnectorSchedule({
 export async function listConnectorSchedules(
   config: OpenWikiOnboardingConfig,
 ): Promise<ConnectorScheduleStatus[]> {
-  const schedule = config.ingestionSchedule;
-  if (!schedule) {
-    return [];
+  const statuses: ConnectorScheduleStatus[] = [];
+
+  if (config.ingestionSchedule) {
+    statuses.push(
+      await createScheduleStatus(
+        "ingestion",
+        config.ingestionSchedule,
+        "All ingestion",
+        "all",
+      ),
+    );
+  }
+  if (config.explorationSchedule) {
+    statuses.push(
+      await createScheduleStatus(
+        "exploration",
+        config.explorationSchedule,
+        "Exploration (weekly floor)",
+        "exploration",
+      ),
+    );
   }
 
+  return statuses;
+}
+
+async function createScheduleStatus(
+  kind: ScheduledAgentKind,
+  schedule: OnboardingSourceScheduleConfig,
+  displayName: string,
+  sourceInstanceId: string,
+): Promise<ConnectorScheduleStatus> {
   const launchAgentPath = schedule.launchAgentPath;
+  return {
+    description: schedule.description,
+    displayName,
+    expression: schedule.expression,
+    launchAgentLoaded: schedule.pausedAt
+      ? false
+      : await isLaunchAgentLoaded(kind),
+    launchAgentPath,
+    launchAgentPlistExists: launchAgentPath
+      ? await pathExists(launchAgentPath)
+      : false,
+    pausedAt: schedule.pausedAt,
+    sourceInstanceId,
+    updatedAt: schedule.updatedAt,
+    warning: schedule.warning,
+  };
+}
+
+function getConfiguredAgentKinds(
+  config: OpenWikiOnboardingConfig,
+): ScheduledAgentKind[] {
   return [
-    {
-      description: schedule.description,
-      displayName: "All ingestion",
-      expression: schedule.expression,
-      launchAgentLoaded: schedule.pausedAt
-        ? false
-        : await isLaunchAgentLoaded(),
-      launchAgentPath,
-      launchAgentPlistExists: launchAgentPath
-        ? await pathExists(launchAgentPath)
-        : false,
-      pausedAt: schedule.pausedAt,
-      sourceInstanceId: "all",
-      updatedAt: schedule.updatedAt,
-      warning: schedule.warning,
-    },
+    ...(config.ingestionSchedule ? (["ingestion"] as const) : []),
+    ...(config.explorationSchedule ? (["exploration"] as const) : []),
   ];
+}
+
+function getSchedule(
+  config: OpenWikiOnboardingConfig,
+  kind: ScheduledAgentKind,
+): OnboardingSourceScheduleConfig | undefined {
+  return kind === "ingestion"
+    ? config.ingestionSchedule
+    : config.explorationSchedule;
+}
+
+function setSchedule(
+  config: OpenWikiOnboardingConfig,
+  kind: ScheduledAgentKind,
+  schedule: OnboardingSourceScheduleConfig | undefined,
+): void {
+  if (kind === "ingestion") {
+    if (schedule) {
+      config.ingestionSchedule = schedule;
+    } else {
+      delete config.ingestionSchedule;
+    }
+    return;
+  }
+
+  if (schedule) {
+    config.explorationSchedule = schedule;
+  } else {
+    delete config.explorationSchedule;
+  }
 }
 
 export async function pauseConnectorSchedules(
   config: OpenWikiOnboardingConfig,
   target: ScheduleTarget,
 ): Promise<ScheduleMutationResult> {
-  if (
-    target !== "all" ||
-    !config.ingestionSchedule ||
-    config.ingestionSchedule.pausedAt
-  ) {
+  const activeKinds = getConfiguredAgentKinds(config).filter(
+    (kind) => !getSchedule(config, kind)?.pausedAt,
+  );
+  if (target !== "all" || activeKinds.length === 0) {
     return {
       config,
       connectorIds: [],
@@ -239,16 +349,17 @@ export async function pauseConnectorSchedules(
     };
   }
 
-  let nextConfig = cloneOnboardingConfig(config);
-  nextConfig = {
-    ...nextConfig,
-    ingestionSchedule: {
-      ...config.ingestionSchedule,
-      pausedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    },
-  };
-  await unloadLaunchAgent();
+  const now = new Date().toISOString();
+  const nextConfig = cloneOnboardingConfig(config);
+  for (const kind of activeKinds) {
+    const schedule = getSchedule(nextConfig, kind)!;
+    setSchedule(nextConfig, kind, {
+      ...schedule,
+      pausedAt: now,
+      updatedAt: now,
+    });
+    await unloadLaunchAgent(kind);
+  }
 
   const reconciled = await reconcileOpenWikiPowerSchedule(nextConfig);
   return {
@@ -271,55 +382,8 @@ export async function resumeConnectorSchedules({
   cwd: string;
   target: ScheduleTarget;
 }): Promise<ScheduleMutationResult> {
-  if (
-    target !== "all" ||
-    !config.ingestionSchedule ||
-    !config.ingestionSchedule.pausedAt
-  ) {
-    return {
-      config,
-      connectorIds: [],
-      skippedConnectorIds: [target],
-      warnings: [],
-    };
-  }
-
-  const result = await installConnectorSchedule({
-    connectorId: "git-repo",
-    cronExpression: config.ingestionSchedule.expression,
-    cwd,
-  });
-  const nextConfig = {
-    ...cloneOnboardingConfig(config),
-    ingestionSchedule: {
-      description: result.description,
-      expression: result.expression,
-      launchAgentPath: result.launchAgentPath,
-      updatedAt: new Date().toISOString(),
-      warning: result.warning,
-    },
-  };
-
-  const reconciled = await reconcileOpenWikiPowerSchedule(nextConfig);
-  return {
-    config: reconciled.config,
-    connectorIds: ["all"],
-    powerSchedule: reconciled.powerSchedule,
-    skippedConnectorIds: [],
-    warnings: [
-      ...(result.warning ? [result.warning] : []),
-      ...(reconciled.powerSchedule?.warning
-        ? [reconciled.powerSchedule.warning]
-        : []),
-    ],
-  };
-}
-
-export async function deleteConnectorSchedules(
-  config: OpenWikiOnboardingConfig,
-  target: ScheduleTarget,
-): Promise<ScheduleMutationResult> {
-  if (target !== "all" || !config.ingestionSchedule) {
+  const agentsToResume = resolveScheduledAgentsToResume(config);
+  if (target !== "all" || agentsToResume.length === 0) {
     return {
       config,
       connectorIds: [],
@@ -329,9 +393,84 @@ export async function deleteConnectorSchedules(
   }
 
   const nextConfig = cloneOnboardingConfig(config);
-  delete nextConfig.ingestionSchedule;
-  await unloadLaunchAgent();
-  await removeLaunchAgentPlist();
+  const installWarnings: string[] = [];
+  for (const agent of agentsToResume) {
+    const result = await installSchedule({
+      agentKind: agent.kind,
+      cronExpression: agent.expression,
+      cwd,
+    });
+    setSchedule(nextConfig, agent.kind, {
+      description: result.description,
+      expression: result.expression,
+      launchAgentPath: result.launchAgentPath,
+      updatedAt: new Date().toISOString(),
+      warning: result.warning,
+    });
+    if (result.warning) {
+      installWarnings.push(result.warning);
+    }
+  }
+
+  const reconciled = await reconcileOpenWikiPowerSchedule(nextConfig);
+  return {
+    config: reconciled.config,
+    connectorIds: ["all"],
+    powerSchedule: reconciled.powerSchedule,
+    skippedConnectorIds: [],
+    warnings: [
+      ...installWarnings,
+      ...(reconciled.powerSchedule?.warning
+        ? [reconciled.powerSchedule.warning]
+        : []),
+    ],
+  };
+}
+
+export function resolveScheduledAgentsToResume(
+  config: OpenWikiOnboardingConfig,
+): ScheduledAgentResume[] {
+  const agents: ScheduledAgentResume[] = [];
+  if (config.ingestionSchedule) {
+    agents.push({
+      expression: config.ingestionSchedule.expression,
+      kind: "ingestion",
+    });
+  }
+  if (config.explorationSchedule) {
+    agents.push({
+      expression: config.explorationSchedule.expression,
+      kind: "exploration",
+    });
+  } else if (config.ingestionSchedule && configHasExplorableSource(config)) {
+    agents.push({
+      expression: DEFAULT_EXPLORATION_CRON,
+      kind: "exploration",
+    });
+  }
+  return agents;
+}
+
+export async function deleteConnectorSchedules(
+  config: OpenWikiOnboardingConfig,
+  target: ScheduleTarget,
+): Promise<ScheduleMutationResult> {
+  const configuredKinds = getConfiguredAgentKinds(config);
+  if (target !== "all" || configuredKinds.length === 0) {
+    return {
+      config,
+      connectorIds: [],
+      skippedConnectorIds: [target],
+      warnings: [],
+    };
+  }
+
+  const nextConfig = cloneOnboardingConfig(config);
+  for (const kind of configuredKinds) {
+    setSchedule(nextConfig, kind, undefined);
+    await unloadLaunchAgent(kind);
+    await removeLaunchAgentPlist(kind);
+  }
 
   const reconciled = await reconcileOpenWikiPowerSchedule(nextConfig);
   return {
@@ -432,7 +571,7 @@ async function reconcileOpenWikiPowerSchedule(
     return { config };
   }
 
-  if (!hasActiveIngestionSchedule(config)) {
+  if (!hasActiveSchedule(config)) {
     if (!savedPmset.enabled) {
       return { config };
     }
@@ -512,9 +651,10 @@ async function cancelOpenWikiPowerSchedule(): Promise<PowerScheduleInstallResult
   }
 }
 
-function hasActiveIngestionSchedule(config: OpenWikiOnboardingConfig): boolean {
+function hasActiveSchedule(config: OpenWikiOnboardingConfig): boolean {
   return Boolean(
-    config.ingestionSchedule && !config.ingestionSchedule.pausedAt,
+    (config.ingestionSchedule && !config.ingestionSchedule.pausedAt) ||
+    (config.explorationSchedule && !config.explorationSchedule.pausedAt),
   );
 }
 
@@ -530,6 +670,9 @@ function cloneOnboardingConfig(
 
   return {
     ...config,
+    explorationSchedule: config.explorationSchedule
+      ? { ...config.explorationSchedule }
+      : undefined,
     ingestionSchedule: config.ingestionSchedule
       ? { ...config.ingestionSchedule }
       : undefined,
@@ -640,13 +783,16 @@ function parseSimpleCronFields(expression: string): {
   };
 }
 
-function getPowerWindowForConfiguredSchedules(
+export function getPowerWindowForConfiguredSchedules(
   config: OpenWikiOnboardingConfig,
 ): Omit<PowerScheduleInstallResult, "enabled" | "warning"> | null {
   const parsedSchedules: RepeatScheduleTime[] = [];
-  const schedule = config.ingestionSchedule;
+  const schedules = [config.ingestionSchedule, config.explorationSchedule];
 
-  if (schedule && !schedule.pausedAt) {
+  for (const schedule of schedules) {
+    if (!schedule || schedule.pausedAt) {
+      continue;
+    }
     const parsedSchedule = parseRepeatScheduleTime(schedule.expression);
     if (parsedSchedule) {
       parsedSchedules.push(parsedSchedule);
@@ -783,22 +929,26 @@ function getSingleCronNumber(
   return Number.isInteger(value) && value >= min && value <= max ? value : null;
 }
 
-function createLaunchAgentPlist({
+export function createLaunchAgentPlist({
+  agentKind,
   calendarInterval,
+  cliPath,
   cwd,
-  label,
   logPath,
+  nodePath,
 }: {
+  agentKind: ScheduledAgentKind;
   calendarInterval: CalendarInterval;
+  cliPath: string;
   cwd: string;
-  label: string;
   logPath: string;
+  nodePath: string;
 }): string {
-  const cliPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+  const agentConfig = getScheduledAgentConfig(agentKind);
   const programArguments = [
-    process.execPath,
+    nodePath,
     cliPath,
-    "ingest",
+    agentConfig.command,
     "all",
     "--scheduled",
     "--print",
@@ -809,7 +959,7 @@ function createLaunchAgentPlist({
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${escapePlist(label)}</string>
+  <string>${escapePlist(agentConfig.label)}</string>
   <key>ProgramArguments</key>
   <array>
 ${programArguments.map((arg) => `    <string>${escapePlist(arg)}</string>`).join("\n")}
@@ -838,35 +988,52 @@ function getLaunchdDomain(): string {
   return `gui/${process.getuid?.() ?? os.userInfo().uid}`;
 }
 
-function getLaunchAgentLabel(): string {
-  return "com.openwiki.ingestion";
+function getScheduledAgentConfig(kind: ScheduledAgentKind): {
+  command: "explore" | "ingest";
+  label: string;
+  logName: string;
+} {
+  return kind === "exploration"
+    ? {
+        command: "explore",
+        label: "com.openwiki.exploration",
+        logName: "exploration.schedule.log",
+      }
+    : {
+        command: "ingest",
+        label: "com.openwiki.ingestion",
+        logName: "ingestion.schedule.log",
+      };
 }
 
 function getLaunchAgentsDir(): string {
   return path.join(os.homedir(), "Library", "LaunchAgents");
 }
 
-function getLaunchAgentPath(): string {
-  return path.join(getLaunchAgentsDir(), `${getLaunchAgentLabel()}.plist`);
+function getLaunchAgentPath(kind: ScheduledAgentKind): string {
+  return path.join(
+    getLaunchAgentsDir(),
+    `${getScheduledAgentConfig(kind).label}.plist`,
+  );
 }
 
-async function unloadLaunchAgent(): Promise<void> {
+async function unloadLaunchAgent(kind: ScheduledAgentKind): Promise<void> {
   if (process.platform !== "darwin") {
     return;
   }
 
   await execFileAsync("launchctl", [
     "bootout",
-    `${getLaunchdDomain()}/${getLaunchAgentLabel()}`,
+    `${getLaunchdDomain()}/${getScheduledAgentConfig(kind).label}`,
   ]).catch(() => null);
 }
 
-async function removeLaunchAgentPlist(): Promise<void> {
+async function removeLaunchAgentPlist(kind: ScheduledAgentKind): Promise<void> {
   if (process.platform !== "darwin") {
     return;
   }
 
-  await unlink(getLaunchAgentPath()).catch((error: unknown) => {
+  await unlink(getLaunchAgentPath(kind)).catch((error: unknown) => {
     if (isFileNotFoundError(error)) {
       return;
     }
@@ -875,7 +1042,7 @@ async function removeLaunchAgentPlist(): Promise<void> {
   });
 }
 
-async function isLaunchAgentLoaded(): Promise<boolean> {
+async function isLaunchAgentLoaded(kind: ScheduledAgentKind): Promise<boolean> {
   if (process.platform !== "darwin") {
     return false;
   }
@@ -883,7 +1050,7 @@ async function isLaunchAgentLoaded(): Promise<boolean> {
   try {
     await execFileAsync("launchctl", [
       "print",
-      `${getLaunchdDomain()}/${getLaunchAgentLabel()}`,
+      `${getLaunchdDomain()}/${getScheduledAgentConfig(kind).label}`,
     ]);
     return true;
   } catch {

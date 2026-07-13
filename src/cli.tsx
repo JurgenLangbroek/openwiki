@@ -43,6 +43,7 @@ import {
   runOpenWikiIngestion,
   type OpenWikiIngestionResult,
 } from "./ingestion.js";
+import { runOpenWikiExploration } from "./exploration.js";
 import {
   readOpenWikiOnboardingConfig,
   saveOpenWikiOnboardingConfig,
@@ -3440,6 +3441,7 @@ if (
   (parsedCommand.kind === "run" && !parsedCommand.dryRun) ||
   parsedCommand.kind === "auth" ||
   parsedCommand.kind === "cron" ||
+  parsedCommand.kind === "explore" ||
   parsedCommand.kind === "ingest" ||
   parsedCommand.kind === "ngrok"
 ) {
@@ -3457,6 +3459,8 @@ if (command.kind === "auth") {
   await runNgrokCommand(command);
 } else if (command.kind === "cron") {
   await runCronCommand(command);
+} else if (command.kind === "explore") {
+  await runExploreCommand(command);
 } else if (command.kind === "ingest") {
   await runIngestCommand(command);
 } else if (shouldPrintStartupError(argv, parsedCommand, command)) {
@@ -3694,6 +3698,41 @@ async function runIngestCommand(
     });
 
     process.stdout.write("\nIngestion summary\n");
+    for (const sourceResult of result.results) {
+      process.stdout.write(
+        `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)\n`,
+      );
+    }
+
+    process.exitCode = result.results.some(
+      (sourceResult) => sourceResult.status === "error",
+    )
+      ? 1
+      : 0;
+  } catch (error) {
+    process.stderr.write(`${getErrorMessage(error)}\n`);
+    writePrintErrorDiagnostics(error);
+    process.exitCode = 1;
+  }
+}
+
+async function runExploreCommand(
+  command: Extract<CliCommand, { kind: "explore" }>,
+): Promise<void> {
+  try {
+    const result = await runOpenWikiExploration(process.cwd(), {
+      debug: isDebugMode(),
+      modelId: command.modelId,
+      onEvent: (event) => {
+        if (event.type === "text" && event.source !== "subgraph") {
+          process.stdout.write(event.text);
+        }
+      },
+      scheduledOnly: command.scheduledOnly,
+      target: command.target,
+    });
+
+    process.stdout.write("\nExploration summary\n");
     for (const sourceResult of result.results) {
       process.stdout.write(
         `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)\n`,

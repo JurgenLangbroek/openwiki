@@ -35,6 +35,38 @@ afterEach(async () => {
 });
 
 describe("OpenWiki onboarding instructions", () => {
+  test("round-trips a normalized exploration schedule", async () => {
+    const home = await createTempHome();
+    const onboarding = await loadOnboardingModule(home);
+
+    await onboarding.saveOpenWikiOnboardingConfig({
+      explorationSchedule: {
+        description: "Weekly on Monday at 3:00 AM",
+        expression: "0 3 * * 1",
+        launchAgentPath:
+          "/tmp/Library/LaunchAgents/com.openwiki.exploration.plist",
+        updatedAt: "2026-07-13T00:00:00.000Z",
+        warning: "fixture warning",
+      },
+      sourceInstances: [],
+      sources: {},
+      version: 1,
+    });
+
+    await expect(
+      onboarding.readOpenWikiOnboardingConfig(),
+    ).resolves.toMatchObject({
+      explorationSchedule: {
+        description: "Weekly on Monday at 3:00 AM",
+        expression: "0 3 * * 1",
+        launchAgentPath:
+          "/tmp/Library/LaunchAgents/com.openwiki.exploration.plist",
+        updatedAt: "2026-07-13T00:00:00.000Z",
+        warning: "fixture warning",
+      },
+    });
+  });
+
   test("saves wiki instructions to INSTRUCTIONS.md instead of onboarding.json", async () => {
     const home = await createTempHome();
     const onboarding = await loadOnboardingModule(home);
