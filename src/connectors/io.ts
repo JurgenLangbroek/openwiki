@@ -69,6 +69,29 @@ export async function markRunSynthesized(
   });
 }
 
+export async function markUnsynthesizedRunsSynthesized(
+  connectorId: ConnectorId,
+  synthesizedAt: string,
+): Promise<void> {
+  const state = await readConnectorState(connectorId);
+  const hasUnsynthesizedRuns = state.runs?.some(
+    (run) => run.synthesizedAt === undefined && run.rawDeletedAt === undefined,
+  );
+
+  if (!hasUnsynthesizedRuns) {
+    return;
+  }
+
+  await writeConnectorState(connectorId, {
+    ...state,
+    runs: state.runs?.map((run) =>
+      run.synthesizedAt === undefined && run.rawDeletedAt === undefined
+        ? { ...run, synthesizedAt }
+        : run,
+    ),
+  });
+}
+
 export async function writeConnectorState(
   connectorId: ConnectorId,
   state: ConnectorState,
