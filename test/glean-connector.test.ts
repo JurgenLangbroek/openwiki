@@ -56,6 +56,7 @@ async function writeGleanConfig(
 
 function createEmptyGleanTransport() {
   return {
+    fetchAuthPreflight: () => Promise.resolve({ documents: [] }),
     fetchCalendar: () => Promise.resolve({ results: [] }),
     fetchExpansion: () => Promise.resolve({}),
     fetchFeed: () => Promise.resolve({ items: [] }),
@@ -700,7 +701,11 @@ describe("Glean connector", () => {
   test("uses the OAuth token and documented bodies for every default request", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
-    await writeGleanConfig({ enabled: true, instance: "acme" });
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const requests: {
       authorization: string | null;
@@ -984,7 +989,11 @@ describe("Glean connector", () => {
   test("records messaging content separately from my-work search results", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
-    await writeGleanConfig({ enabled: true, instance: "acme" });
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     vi.stubGlobal(
       "fetch",

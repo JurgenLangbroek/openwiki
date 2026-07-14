@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { renderRunLedgerSection } from "../src/connectors/run-ledger.ts";
 import { createGleanConnector } from "../src/connectors/sources/glean.ts";
 
 type SliceFetchInput = {
@@ -36,6 +37,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
       delete process.env[key];
@@ -47,6 +50,57 @@ afterEach(async () => {
 });
 
 describe("Glean Backfill", () => {
+  test("aborts on insufficient scope before walking a slice or mutating state", async () => {
+    const calls: SliceFetchCall[] = [];
+    const failure = Object.assign(
+      new Error("insufficient_scope: getdocuments scope is missing"),
+      { errorCode: "insufficient_scope", status: 403 },
+    );
+    const transport = {
+      ...createBackfillTransport(calls, () => ({ results: [] })),
+      fetchAuthPreflight: vi.fn(() => Promise.reject(failure)),
+    };
+
+    const result = await createGleanConnector({ transport }).backfill?.();
+
+    expect(result).toMatchObject({
+      status: "error",
+    });
+    expect(result?.message).toMatch(/openwiki auth glean/iu);
+    expect(transport.fetchAuthPreflight).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([]);
+    expect(
+      result?.ledgerEvents?.some(
+        (event) =>
+          event.type === "warning" &&
+          /preflight.*insufficient_scope/iu.test(event.message),
+      ),
+    ).toBe(true);
+    await expect(
+      readFile(path.join(openWikiHome, "connectors", "glean", "state.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("continues when the intentionally empty auth preflight reaches request parsing", async () => {
+    const calls: SliceFetchCall[] = [];
+    const transport = {
+      ...createBackfillTransport(calls, () => ({ results: [] })),
+      fetchAuthPreflight: vi.fn(() =>
+        Promise.reject(
+          Object.assign(new Error("Error extracting get documents request"), {
+            status: 400,
+          }),
+        ),
+      ),
+    };
+
+    const result = await createGleanConnector({ transport }).backfill?.();
+
+    expect(result).toMatchObject({ status: "success", warnings: [] });
+    expect(transport.fetchAuthPreflight).toHaveBeenCalledTimes(1);
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
   test("uses per-source Backfill slice settings", async () => {
     const calls: SliceFetchCall[] = [];
 
@@ -298,6 +352,217 @@ describe("Glean Backfill", () => {
         url: "https://app.glean.com/go/cannot-expand",
       },
     ]);
+  });
+
+  test("trips after three candidate-bearing slices have total Content Expansion failure", async () => {
+    const calls: SliceFetchCall[] = [];
+    const fetchExpansion = vi.fn(() =>
+      Promise.reject(new Error("getdocuments scope denied")),
+    );
+    const result = await createGleanConnector({
+      transport: createBackfillTransport(
+        calls,
+        ({ stream, untilDate }) =>
+          stream === "my-work" &&
+          ["2026-07-14", "2026-07-04", "2026-06-24"].includes(untilDate ?? "")
+            ? gleanSearchResponse(`item-${untilDate}`)
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.();
+
+    expect(result).toMatchObject({ status: "error" });
+    expect(result?.message).toMatch(
+      /Content Expansion total-failure tripwire.*getdocuments scope denied/iu,
+    );
+    expect(fetchExpansion).toHaveBeenCalledTimes(3);
+    expect(
+      result?.ledgerEvents?.some(
+        (event) =>
+          event.type === "warning" &&
+          /tripwire.*dominant failure reason.*getdocuments scope denied/iu.test(
+            event.message,
+          ),
+      ),
+    ).toBe(true);
+    expect(result?.ledgerEvents).toContainEqual({
+      status: "walking",
+      type: "watermark",
+      watermark: "2026-07-14T12:00:00.000Z",
+    });
+    const renderedLedger = renderRunLedgerSection({
+      connectorId: "glean",
+      events: result?.ledgerEvents ?? [],
+      message: result?.message ?? "missing result",
+      mode: "backfill",
+      runId: result?.runId ?? "missing-run-id",
+      startedAt: "2026-07-14T12:00:00.000Z",
+      status: result?.status ?? "error",
+    });
+    expect(renderedLedger).toContain(
+      "History provably covered back to 2026-07-14 (walking).",
+    );
+    expect(await readGleanState()).toMatchObject({
+      backfill: {
+        slicesWalked: 0,
+        status: "walking",
+        watermark: "2026-07-14T12:00:00.000Z",
+      },
+      runs: [{ status: "error" }],
+    });
+  });
+
+  test("rolls persisted resume state back before a tripped Content Expansion failure streak", async () => {
+    const calls: SliceFetchCall[] = [];
+    const failedIds = ["failed-1", "failed-2", "failed-3"];
+    const fetchExpansion = vi.fn(({ item }: ExpansionFetchInput) =>
+      item.id === "covered-item"
+        ? Promise.resolve({ content: "covered" })
+        : Promise.reject(new Error("scope denied")),
+    );
+    const idsByUntilDate: Record<string, string[]> = {
+      "2026-06-14": [failedIds[2]],
+      "2026-06-24": [failedIds[1]],
+      "2026-07-04": [failedIds[0]],
+      "2026-07-14": ["covered-item"],
+    };
+
+    const result = await createGleanConnector({
+      transport: createBackfillTransport(
+        calls,
+        ({ stream, untilDate }) =>
+          stream === "my-work"
+            ? gleanSearchResponse(...(idsByUntilDate[untilDate ?? ""] ?? []))
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.();
+
+    expect(result).toMatchObject({ status: "error" });
+    const state = (await readGleanState()) as {
+      backfill: { slicesWalked: number; watermark: string };
+      seenIds?: Record<string, string[]>;
+    };
+    expect(state.backfill).toMatchObject({
+      slicesWalked: 1,
+      watermark: "2026-07-04T12:00:00.000Z",
+    });
+    expect(state.seenIds?.["my-work"]).toEqual(["covered-item"]);
+    expect(state.seenIds?.expanded).toEqual(["covered-item"]);
+    expect(Object.values(state.seenIds ?? {}).flat()).not.toEqual(
+      expect.arrayContaining(failedIds),
+    );
+  });
+
+  test("allows the Content Expansion total-failure threshold to be configured", async () => {
+    const calls: SliceFetchCall[] = [];
+    const fetchExpansion = vi.fn(() =>
+      Promise.reject(new Error("configured-threshold failure")),
+    );
+    const result = await createGleanConnector({
+      transport: createBackfillTransport(
+        calls,
+        ({ stream, untilDate }) =>
+          stream === "my-work" && untilDate === "2026-07-14"
+            ? gleanSearchResponse("one-failed-item")
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.({
+      connectorConfig: {
+        expansion: { totalFailureSliceLimit: 1 },
+      },
+    });
+
+    expect(result).toMatchObject({ status: "error" });
+    expect(result?.message).toMatch(/tripped after 1/iu);
+    expect(fetchExpansion).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not count a slice with a deduplicated candidate as total failure", async () => {
+    await writeFile(
+      path.join(openWikiHome, "connectors", "glean", "state.json"),
+      `${JSON.stringify({
+        seenIds: { expanded: ["already-expanded"] },
+        version: 1,
+      })}\n`,
+    );
+    const calls: SliceFetchCall[] = [];
+    const fetchExpansion = vi.fn(() =>
+      Promise.reject(new Error("cannot expand")),
+    );
+    const idsByUntilDate: Record<string, string[]> = {
+      "2026-06-14": ["fail-4"],
+      "2026-06-24": ["fail-3"],
+      "2026-07-04": ["already-expanded", "fail-2"],
+      "2026-07-14": ["fail-1"],
+    };
+    const result = await createGleanConnector({
+      transport: createBackfillTransport(
+        calls,
+        ({ stream, untilDate }) =>
+          stream === "my-work"
+            ? gleanSearchResponse(...(idsByUntilDate[untilDate ?? ""] ?? []))
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.();
+
+    expect(result).toMatchObject({ status: "success" });
+    expect(fetchExpansion).toHaveBeenCalledTimes(4);
+  });
+
+  test("retries a rate-limited Glean request and completes the Backfill", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    let getDocumentsAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url.endsWith("/rest/api/v1/getdocuments")) {
+          getDocumentsAttempts += 1;
+          return Promise.resolve(
+            getDocumentsAttempts === 1
+              ? Response.json(
+                  { error: "rate_limited" },
+                  {
+                    headers: { "Retry-After": "0" },
+                    status: 429,
+                    statusText: "Too Many Requests",
+                  },
+                )
+              : Response.json({ documents: [] }),
+          );
+        }
+        if (url.endsWith("/rest/api/v1/search")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+
+        const requestBody = typeof init?.body === "string" ? init.body : "{}";
+        const request = JSON.parse(requestBody) as {
+          id?: number;
+          method?: string;
+        };
+        return Promise.resolve(
+          request.id === undefined
+            ? new Response(null, { status: 202 })
+            : Response.json({
+                id: request.id,
+                jsonrpc: "2.0",
+                result: request.method === "tools/list" ? { tools: [] } : {},
+              }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().backfill?.({
+      connectorConfig: {
+        rateLimit: { requestsPerSecond: 1_000_000 },
+      },
+    });
+
+    expect(result).toMatchObject({ status: "success" });
+    expect(getDocumentsAttempts).toBe(2);
   });
 
   test("records a whole Content Expansion pull failure with its slice", async () => {
@@ -560,6 +825,7 @@ function createBackfillTransport(
 
   return {
     fetchCalendar: () => Promise.resolve({ results: [] }),
+    fetchAuthPreflight: () => Promise.resolve({ documents: [] }),
     fetchExpansion,
     fetchFeed: () => Promise.resolve({ items: [] }),
     fetchMessages: (input: SliceFetchInput) => fetchStream("messages", input),

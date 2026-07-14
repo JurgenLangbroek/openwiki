@@ -23,12 +23,14 @@ import {
   planNextSlice,
   recordSlice,
   type SliceWalkConfig,
+  type SliceWalkState,
 } from "../slice-walker.js";
 import {
   createNoWatermarkEvent,
   type RunLedgerEvent,
   type RunLedgerSlice,
 } from "../run-ledger.js";
+import { createRateGate, type RateGate } from "../rate-gate.js";
 import type {
   ConnectorDefinition,
   ConnectorIngestOptions,
@@ -58,6 +60,7 @@ type GleanSlicedSearchInput = {
 };
 
 export type GleanProbeTransport = {
+  fetchAuthPreflight: (input: { backendUrl: string }) => Promise<unknown>;
   fetchCalendar: (input: { backendUrl: string }) => Promise<unknown>;
   fetchExpansion: (input: {
     backendUrl: string;
@@ -83,9 +86,13 @@ type GleanConfig = GleanTargetConfig &
     };
     enabled?: boolean;
     expansion?: {
+      totalFailureSliceLimit?: number;
       transcriptDatasources?: string[];
     };
     messagingApps?: string[];
+    rateLimit?: {
+      requestsPerSecond?: number;
+    };
     windowHours?: number;
   };
 
@@ -111,17 +118,24 @@ const DEFAULT_BACKFILL_CONFIG: SliceWalkConfig = {
   maxSlices: 400,
   sliceDays: 30,
 };
+const DEFAULT_GLEAN_REQUESTS_PER_SECOND = 4;
+const DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT = 3;
 const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   backfill: DEFAULT_BACKFILL_CONFIG,
   enabled: false,
   expansion: {
+    totalFailureSliceLimit: DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT,
     transcriptDatasources: ["fellow"],
   },
   gatewayPath: "/mcp/gateway/proxy",
   mcpPath: "/mcp/default",
   messagingApps: ["slack"],
+  rateLimit: { requestsPerSecond: DEFAULT_GLEAN_REQUESTS_PER_SECOND },
   windowHours: 48,
 };
+const sharedGleanRateGate: RateGate = createRateGate({
+  requestsPerSecond: DEFAULT_GLEAN_REQUESTS_PER_SECOND,
+});
 const GLEAN_DISABLED_MESSAGE =
   "Glean connector is not enabled. Run openwiki auth glean or set enabled: true in ~/.openwiki/connectors/glean/config.json.";
 
@@ -181,8 +195,13 @@ export function createGleanConnector(overrides?: {
       };
     },
     mcpEndpoints: ["default", "gateway"],
-    ingest: async (): Promise<ConnectorIngestResult> => {
-      const preparation = await prepareGleanLiveTools(overrides?.transport);
+    ingest: async (
+      options?: ConnectorIngestOptions,
+    ): Promise<ConnectorIngestResult> => {
+      const preparation = await prepareGleanLiveTools(
+        overrides?.transport,
+        options?.connectorConfig,
+      );
       if (preparation.kind === "result") {
         return preparation.result;
       }
@@ -399,18 +418,52 @@ async function backfillGlean(
     transport,
     warnings,
   } = preparation;
+  try {
+    await transport.fetchAuthPreflight({ backendUrl: target.backendUrl });
+  } catch (error) {
+    if (isInsufficientScopeError(error)) {
+      const reason = readErrorReason(error);
+      const message = `Glean Backfill auth preflight failed (${reason}). Run openwiki auth glean to refresh the required Glean scopes, then retry.`;
+      const preflightWarnings = [message, ...warnings];
+      const ledgerEvents: RunLedgerEvent[] = [];
+      appendFinalLedgerEvents(
+        ledgerEvents,
+        (await readConnectorState("glean")).backfill,
+        fetchedAt,
+        preflightWarnings,
+      );
+      return createGleanBackfillResult({
+        ledgerEvents,
+        message,
+        rawFiles,
+        runId,
+        status: "error",
+        warnings: preflightWarnings,
+      });
+    }
+  }
   const walkConfig = normalizeBackfillConfig(config.backfill);
+  const contentExpansionTotalFailureSliceLimit = normalizePositiveNumber(
+    config.expansion?.totalFailureSliceLimit,
+    DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT,
+  );
   let state = await readConnectorState("glean");
   let walkState = beginSliceWalk({
     now: fetchedAt,
     resume: state.backfill,
   });
   const slicesBeforeRun = walkState.slicesWalked;
+  let consecutiveContentExpansionTotalFailures = 0;
   let expandedItemCount = 0;
+  let contentExpansionFailureReasons: string[] = [];
+  let contentExpansionFailureStreakResumeSnapshot:
+    { state: ConnectorState; walkState: SliceWalkState } | undefined;
   const ledgerEvents: RunLedgerEvent[] = [];
   let pulledItemCount = 0;
 
   while (true) {
+    const stateBeforeSlice = state;
+    const walkStateBeforeSlice = walkState;
     const bounds = planNextSlice(walkState, walkConfig);
     if (!bounds) {
       break;
@@ -492,6 +545,9 @@ async function backfillGlean(
       myWork.artifact.counts.new + messages.artifact.counts.new;
     pulledItemCount += newItemCount;
     let expanded: ExpansionPullResult["artifact"] | undefined;
+    let sliceContentExpansionHadCandidates = false;
+    let sliceContentExpansionTotallyFailed = false;
+    let sliceContentExpansionFailureReasons: string[] = [];
     if (newItemCount > 0) {
       try {
         const pulled = await pullExpandedStream({
@@ -510,10 +566,40 @@ async function backfillGlean(
         warnings.push(...pulled.warnings);
         expanded = pulled.artifact;
         expandedItemCount += pulled.artifact.counts.expanded;
+        sliceContentExpansionHadCandidates =
+          pulled.artifact.counts.candidates > 0;
+        sliceContentExpansionTotallyFailed =
+          pulled.artifact.counts.candidates > 0 &&
+          pulled.artifact.counts.failed === pulled.artifact.counts.candidates;
+        sliceContentExpansionFailureReasons = pulled.artifact.failures.map(
+          ({ reason }) => reason,
+        );
         state = withSeenIds(state, "expanded", pulled.seenIds);
         appendExpansionLedgerEvents(ledgerEvents, pulled.artifact, slice);
       } catch (error) {
+        const reason = readErrorReason(error);
+        sliceContentExpansionHadCandidates = true;
+        sliceContentExpansionTotallyFailed = true;
+        sliceContentExpansionFailureReasons = [reason];
         appendExpansionPullFailure(ledgerEvents, warnings, error, slice);
+      }
+    }
+    if (sliceContentExpansionHadCandidates) {
+      if (sliceContentExpansionTotallyFailed) {
+        if (consecutiveContentExpansionTotalFailures === 0) {
+          contentExpansionFailureStreakResumeSnapshot = {
+            state: stateBeforeSlice,
+            walkState: walkStateBeforeSlice,
+          };
+        }
+        consecutiveContentExpansionTotalFailures += 1;
+        contentExpansionFailureReasons.push(
+          ...sliceContentExpansionFailureReasons,
+        );
+      } else {
+        consecutiveContentExpansionTotalFailures = 0;
+        contentExpansionFailureReasons = [];
+        contentExpansionFailureStreakResumeSnapshot = undefined;
       }
     }
     rawFiles.push(
@@ -533,6 +619,50 @@ async function backfillGlean(
     );
     walkState = recordSlice(walkState, { newItemCount }, walkConfig);
     state = { ...state, backfill: walkState };
+    if (
+      consecutiveContentExpansionTotalFailures >=
+      contentExpansionTotalFailureSliceLimit
+    ) {
+      const dominantReason = findDominantReason(contentExpansionFailureReasons);
+      const tripwireMessage = `Glean Content Expansion total-failure tripwire tripped after ${consecutiveContentExpansionTotalFailures} consecutive candidate-bearing slices; dominant failure reason: ${dominantReason}.`;
+      warnings.push(tripwireMessage);
+      const resumeSnapshot = contentExpansionFailureStreakResumeSnapshot;
+      if (!resumeSnapshot) {
+        throw new Error(
+          "Glean Content Expansion failure-streak resume snapshot is missing.",
+        );
+      }
+      appendFinalLedgerEvents(
+        ledgerEvents,
+        resumeSnapshot.walkState,
+        fetchedAt,
+        warnings,
+      );
+      await writeConnectorState(
+        "glean",
+        updateStateWithRun(
+          {
+            ...resumeSnapshot.state,
+            backfill: resumeSnapshot.walkState,
+          },
+          {
+            at: fetchedAt,
+            rawFiles,
+            runId,
+            status: "error",
+            warnings,
+          },
+        ),
+      );
+      return createGleanBackfillResult({
+        ledgerEvents,
+        message: tripwireMessage,
+        rawFiles,
+        runId,
+        status: "error",
+        warnings,
+      });
+    }
     await writeConnectorState("glean", state);
   }
 
@@ -559,6 +689,23 @@ async function backfillGlean(
     status: "success",
     warnings,
   });
+}
+
+function findDominantReason(reasons: string[]): string {
+  const counts = new Map<string, number>();
+  let dominantReason = "reason not recorded";
+  let dominantCount = 0;
+
+  for (const reason of reasons) {
+    const count = (counts.get(reason) ?? 0) + 1;
+    counts.set(reason, count);
+    if (count > dominantCount) {
+      dominantCount = count;
+      dominantReason = reason;
+    }
+  }
+
+  return dominantReason;
 }
 
 function createGleanBackfillResult({
@@ -716,6 +863,9 @@ async function prepareGleanLiveTools(
     await readConnectorConfig<GleanConfig>("glean", DEFAULT_GLEAN_CONFIG),
     connectorConfig,
   );
+  sharedGleanRateGate.setRequestsPerSecond(
+    normalizeRequestsPerSecond(config.rateLimit?.requestsPerSecond),
+  );
   const transport =
     transportOverride ?? createDefaultTransport(config.messagingApps);
 
@@ -830,7 +980,19 @@ function mergeGleanConfig(
     backfill: isJsonObject(override.backfill)
       ? { ...config.backfill, ...override.backfill }
       : config.backfill,
+    expansion: isJsonObject(override.expansion)
+      ? { ...config.expansion, ...override.expansion }
+      : config.expansion,
+    rateLimit: isJsonObject(override.rateLimit)
+      ? { ...config.rateLimit, ...override.rateLimit }
+      : config.rateLimit,
   };
+}
+
+function normalizeRequestsPerSecond(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_GLEAN_REQUESTS_PER_SECOND;
 }
 
 async function resolveGleanMcpConfig(
@@ -1042,6 +1204,10 @@ function createDefaultTransport(
   const apps = normalizeMessagingApps(messagingApps);
 
   return {
+    fetchAuthPreflight: async ({ backendUrl }) =>
+      await postGleanJson(backendUrl, "/rest/api/v1/getdocuments", {
+        documentSpecs: [],
+      }),
     fetchCalendar: async ({ backendUrl }) =>
       await postGleanJson(backendUrl, "/rest/api/v1/people", {
         includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
@@ -1106,6 +1272,16 @@ function createDefaultTransport(
   };
 }
 
+function isInsufficientScopeError(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "errorCode" in error) {
+    if (error.errorCode === "insufficient_scope") {
+      return true;
+    }
+  }
+
+  return readErrorReason(error).includes("insufficient_scope");
+}
+
 async function fetchGleanSearch(
   backendUrl: string,
   query: string,
@@ -1136,26 +1312,28 @@ async function postGleanJson(
   pathname: string,
   body: JsonObject,
 ): Promise<unknown> {
-  const accessToken = process.env[OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY];
-  if (!accessToken) {
-    throw new Error("Glean access token is missing.");
-  }
+  return await sharedGleanRateGate.run(async () => {
+    const accessToken = process.env[OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY];
+    if (!accessToken) {
+      throw new Error("Glean access token is missing.");
+    }
 
-  const response = await requestGleanJson(
-    backendUrl,
-    pathname,
-    body,
-    accessToken,
-  );
-  if (response.status !== 401) {
-    return await parseGleanJsonResponse(response, pathname);
-  }
+    const response = await requestGleanJson(
+      backendUrl,
+      pathname,
+      body,
+      accessToken,
+    );
+    if (response.status !== 401) {
+      return await parseGleanJsonResponse(response, pathname);
+    }
 
-  const refreshedToken = await refreshOAuthAccessToken("glean");
-  return await parseGleanJsonResponse(
-    await requestGleanJson(backendUrl, pathname, body, refreshedToken),
-    pathname,
-  );
+    const refreshedToken = await refreshOAuthAccessToken("glean");
+    return await parseGleanJsonResponse(
+      await requestGleanJson(backendUrl, pathname, body, refreshedToken),
+      pathname,
+    );
+  });
 }
 
 async function requestGleanJson(
@@ -1180,18 +1358,34 @@ async function parseGleanJsonResponse(
 ): Promise<unknown> {
   if (!response.ok) {
     const { detail, errorCode } = await readGleanErrorDetail(response);
+    const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After"));
     const status = `${response.status} ${response.statusText}`.trim();
     const detailSuffix = detail ? ` (${detail})` : "";
     throw Object.assign(
       new Error(`Glean ${pathname} request failed: ${status}${detailSuffix}`),
       {
         ...(errorCode ? { errorCode } : {}),
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
         status: response.status,
       },
     );
   }
 
   return await response.json();
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (value === null) {
+    return undefined;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1_000;
+  }
+
+  const retryAt = Date.parse(value);
+  return Number.isNaN(retryAt) ? undefined : Math.max(0, retryAt - Date.now());
 }
 
 function mergeSearchResponses(responses: unknown[]): JsonObject {
