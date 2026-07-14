@@ -78,7 +78,6 @@ type GleanConfig = GleanTargetConfig &
     };
     enabled?: boolean;
     expansion?: {
-      maxItems?: number;
       transcriptDatasources?: string[];
     };
     messagingApps?: string[];
@@ -111,7 +110,6 @@ const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   backfill: DEFAULT_BACKFILL_CONFIG,
   enabled: false,
   expansion: {
-    maxItems: 20,
     transcriptDatasources: ["fellow"],
   },
   gatewayPath: "/mcp/gateway/proxy",
@@ -288,7 +286,6 @@ export function createGleanConnector(overrides?: {
           const pulled = await pullExpandedStream({
             backendUrl: target.backendUrl,
             fetchedAt,
-            maxItems: normalizeExpansionMaxItems(config.expansion?.maxItems),
             pulledStreams,
             seenIds: state.seenIds?.expanded ?? [],
             transcriptDatasources: normalizeTranscriptDatasources(
@@ -373,6 +370,7 @@ async function backfillGlean(
     resume: state.backfill,
   });
   const slicesBeforeRun = walkState.slicesWalked;
+  let expandedItemCount = 0;
   let pulledItemCount = 0;
 
   while (true) {
@@ -449,6 +447,30 @@ async function backfillGlean(
     const newItemCount =
       myWork.artifact.counts.new + messages.artifact.counts.new;
     pulledItemCount += newItemCount;
+    let expanded: ExpansionPullResult["artifact"] | undefined;
+    if (newItemCount > 0) {
+      try {
+        const pulled = await pullExpandedStream({
+          backendUrl: target.backendUrl,
+          fetchedAt: sliceFetchedAt,
+          pulledStreams: [
+            { items: myWork.artifact.items, stream: "my-work" },
+            { items: messages.artifact.items, stream: "messages" },
+          ],
+          seenIds: state.seenIds?.expanded ?? [],
+          transcriptDatasources: normalizeTranscriptDatasources(
+            config.expansion?.transcriptDatasources,
+          ),
+          transport,
+        });
+        warnings.push(...pulled.warnings);
+        expanded = pulled.artifact;
+        expandedItemCount += pulled.artifact.counts.expanded;
+        state = withSeenIds(state, "expanded", pulled.seenIds);
+      } catch (error) {
+        warnings.push(`Glean expanded pull failed: ${readErrorReason(error)}`);
+      }
+    }
     rawFiles.push(
       await writeRawJson(
         "glean",
@@ -456,6 +478,7 @@ async function backfillGlean(
         `backfill-slice-${String(sliceNumber).padStart(4, "0")}.json`,
         {
           bounds,
+          ...(expanded ? { expanded } : {}),
           fetchedAt: sliceFetchedAt,
           messages: messages.artifact,
           myWork: myWork.artifact,
@@ -483,7 +506,7 @@ async function backfillGlean(
 
   return createGleanBackfillResult({
     liveTools,
-    message: `Backfill walked ${slicesWalked} slice(s), pulled ${pulledItemCount} item(s); history reaches back to ${walkState.watermark.slice(0, 10)}.`,
+    message: `Backfill walked ${slicesWalked} slice(s), pulled ${pulledItemCount} item(s), expanded ${expandedItemCount} item(s); history reaches back to ${walkState.watermark.slice(0, 10)}.`,
     rawFiles,
     runId,
     status: "success",
@@ -775,7 +798,6 @@ const FEED_CATEGORIES = [
 ] as const;
 const MAX_SEEN_IDS_PER_STREAM = 5_000;
 const CALENDAR_WINDOW_DAYS = 7;
-const DEFAULT_EXPANSION_MAX_ITEMS = 20;
 const DEFAULT_MESSAGING_APPS = ["slack"];
 const DEFAULT_TRANSCRIPT_DATASOURCES = ["fellow"];
 const DEFAULT_WINDOW_HOURS = 48;
@@ -794,7 +816,6 @@ type DocumentStreamName = "feed" | "messages" | "my-work";
 type EvidenceStreamName = DocumentStreamName | "calendar";
 type ExpansionCounts = {
   candidates: number;
-  capped: number;
   deduplicated: number;
   expanded: number;
   failed: number;
@@ -1035,7 +1056,6 @@ function mergeSearchResponses(responses: unknown[]): JsonObject {
 async function pullExpandedStream({
   backendUrl,
   fetchedAt,
-  maxItems,
   pulledStreams,
   seenIds,
   transcriptDatasources,
@@ -1043,7 +1063,6 @@ async function pullExpandedStream({
 }: {
   backendUrl: string;
   fetchedAt: string;
-  maxItems: number;
   pulledStreams: PulledEvidenceStream[];
   seenIds: string[];
   transcriptDatasources: string[];
@@ -1081,13 +1100,12 @@ async function pullExpandedStream({
   unseenCandidates.sort(
     (left, right) => left.tier - right.tier || left.order - right.order,
   );
-  const selectedCandidates = unseenCandidates.slice(0, maxItems);
   const items: JsonObject[] = [];
   const expandedIds: string[] = [];
   const failures: ExpansionFailure[] = [];
   const warnings: string[] = [];
 
-  for (const candidate of selectedCandidates) {
+  for (const candidate of unseenCandidates) {
     try {
       const response = await transport.fetchExpansion({
         backendUrl,
@@ -1124,7 +1142,6 @@ async function pullExpandedStream({
     artifact: {
       counts: {
         candidates: candidates.length,
-        capped: unseenCandidates.length - selectedCandidates.length,
         deduplicated: candidates.length - unseenCandidates.length,
         expanded: items.length,
         failed: failures.length,
@@ -1736,10 +1753,6 @@ function normalizePositiveNumber(
 
 function normalizeWindowHours(windowHours: number | undefined): number {
   return normalizePositiveNumber(windowHours, DEFAULT_WINDOW_HOURS);
-}
-
-function normalizeExpansionMaxItems(maxItems: number | undefined): number {
-  return normalizePositiveNumber(maxItems, DEFAULT_EXPANSION_MAX_ITEMS);
 }
 
 function normalizeMessagingApps(messagingApps: string[] | undefined): string[] {

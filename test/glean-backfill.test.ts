@@ -14,6 +14,11 @@ type SliceFetchCall = SliceFetchInput & {
   stream: "messages" | "my-work";
 };
 
+type ExpansionFetchInput = {
+  backendUrl: string;
+  item: { id: string };
+};
+
 const originalEnv = {
   OPENWIKI_GLEAN_ACCESS_TOKEN: process.env.OPENWIKI_GLEAN_ACCESS_TOKEN,
   OPENWIKI_HOME: process.env.OPENWIKI_HOME,
@@ -103,7 +108,7 @@ describe("Glean Backfill", () => {
 
     expect(result).toMatchObject({
       message:
-        "Backfill walked 4 slice(s), pulled 2 item(s); history reaches back to 2026-06-04.",
+        "Backfill walked 4 slice(s), pulled 2 item(s), expanded 2 item(s); history reaches back to 2026-06-04.",
       status: "success",
     });
     expect(
@@ -143,6 +148,158 @@ describe("Glean Backfill", () => {
       status: "dry",
       version: 1,
       watermark: "2026-06-04T12:00:00.000Z",
+    });
+  });
+
+  test("expands every item across multiple Backfill slices without a cap", async () => {
+    const calls: SliceFetchCall[] = [];
+    const firstSliceIds = Array.from(
+      { length: 25 },
+      (_, index) => `first-slice-${index + 1}`,
+    );
+    const secondSliceIds = ["second-slice-1", "second-slice-2"];
+    const fetchExpansion = vi.fn(({ item }: ExpansionFetchInput) =>
+      Promise.resolve({ content: `Full ${item.id}` }),
+    );
+    const transport = createBackfillTransport(
+      calls,
+      ({ stream, untilDate }) =>
+        stream === "my-work" && untilDate === "2026-07-14"
+          ? gleanSearchResponse(...firstSliceIds)
+          : stream === "messages" && untilDate === "2026-07-04"
+            ? gleanSearchResponse(...secondSliceIds)
+            : { results: [] },
+      fetchExpansion,
+    );
+
+    const result = await createGleanConnector({ transport }).backfill?.();
+
+    expect(result).toMatchObject({
+      message:
+        "Backfill walked 4 slice(s), pulled 27 item(s), expanded 27 item(s); history reaches back to 2026-06-04.",
+      status: "success",
+    });
+    expect(fetchExpansion).toHaveBeenCalledTimes(27);
+    expect(fetchExpansion.mock.calls.map(([{ item }]) => item.id)).toEqual([
+      ...firstSliceIds,
+      ...secondSliceIds,
+    ]);
+
+    const sliceFiles = result?.rawFiles.filter((file) =>
+      path.basename(file).startsWith("backfill-slice-"),
+    );
+    const firstSlice = await readJsonObject(sliceFiles?.[0]);
+    const secondSlice = await readJsonObject(sliceFiles?.[1]);
+    expect(firstSlice.expanded).toMatchObject({
+      counts: { candidates: 25, expanded: 25, failed: 0 },
+      items: firstSliceIds.map((id) => ({ id })),
+      stream: "expanded",
+    });
+    expect(secondSlice.expanded).toMatchObject({
+      counts: { candidates: 2, expanded: 2, failed: 0 },
+      items: secondSliceIds.map((id) => ({ id })),
+      stream: "expanded",
+    });
+  });
+
+  test("records Content Expansion failure reasons without blocking the watermark", async () => {
+    const calls: SliceFetchCall[] = [];
+    const fetchExpansion = vi.fn(({ item }: ExpansionFetchInput) =>
+      item.id === "cannot-expand"
+        ? Promise.reject(new Error("index read unavailable"))
+        : Promise.resolve({ content: `Full ${item.id}` }),
+    );
+    const transport = createBackfillTransport(
+      calls,
+      ({ stream, untilDate }) =>
+        stream === "my-work" && untilDate === "2026-07-14"
+          ? gleanSearchResponse("cannot-expand")
+          : { results: [] },
+      fetchExpansion,
+    );
+
+    const result = await createGleanConnector({ transport }).backfill?.();
+
+    expect(result).toMatchObject({
+      message:
+        "Backfill walked 3 slice(s), pulled 1 item(s), expanded 0 item(s); history reaches back to 2026-06-14.",
+      status: "success",
+      warnings: [
+        "Glean expanded fetch failed for cannot-expand: index read unavailable",
+      ],
+    });
+    const firstSlicePath = result?.rawFiles.find(
+      (file) => path.basename(file) === "backfill-slice-0001.json",
+    );
+    expect(await readJsonObject(firstSlicePath)).toMatchObject({
+      expanded: {
+        counts: { candidates: 1, expanded: 0, failed: 1 },
+        failures: [
+          {
+            id: "cannot-expand",
+            reason: "index read unavailable",
+            sourceStream: "my-work",
+          },
+        ],
+        items: [],
+      },
+    });
+    expect((await readGleanState()).backfill).toMatchObject({
+      slicesWalked: 3,
+      status: "dry",
+      watermark: "2026-06-14T12:00:00.000Z",
+    });
+  });
+
+  test("does not re-expand a persisted id when a later Backfill finds it in another stream", async () => {
+    const firstCalls: SliceFetchCall[] = [];
+    const fetchExpansion = vi.fn(({ item }: ExpansionFetchInput) =>
+      Promise.resolve({ content: `Full ${item.id}` }),
+    );
+    const firstResult = await createGleanConnector({
+      transport: createBackfillTransport(
+        firstCalls,
+        ({ stream, untilDate }) =>
+          stream === "my-work" && untilDate === "2026-07-14"
+            ? gleanSearchResponse("cross-run-item")
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.();
+
+    expect(firstResult?.status).toBe("success");
+    expect(fetchExpansion).toHaveBeenCalledTimes(1);
+    fetchExpansion.mockClear();
+    vi.setSystemTime(new Date("2026-07-14T12:00:01.000Z"));
+
+    const repeatCalls: SliceFetchCall[] = [];
+    const repeatResult = await createGleanConnector({
+      transport: createBackfillTransport(
+        repeatCalls,
+        ({ stream, untilDate }) =>
+          stream === "messages" && untilDate === "2026-06-14"
+            ? gleanSearchResponse("cross-run-item")
+            : { results: [] },
+        fetchExpansion,
+      ),
+    }).backfill?.();
+
+    expect(repeatResult?.status).toBe("success");
+    expect(fetchExpansion).not.toHaveBeenCalled();
+    const firstRepeatSlice = repeatResult?.rawFiles.find(
+      (file) => path.basename(file) === "backfill-slice-0001.json",
+    );
+    expect(await readJsonObject(firstRepeatSlice)).toMatchObject({
+      expanded: {
+        counts: {
+          candidates: 1,
+          deduplicated: 1,
+          expanded: 0,
+          failed: 0,
+        },
+        items: [],
+      },
+      messages: { counts: { new: 1 } },
     });
   });
 
@@ -297,6 +454,8 @@ describe("Glean Backfill", () => {
 function createBackfillTransport(
   calls: SliceFetchCall[],
   fetchSlice: (input: SliceFetchCall) => unknown,
+  fetchExpansion: (input: ExpansionFetchInput) => Promise<unknown> = () =>
+    Promise.resolve({}),
 ) {
   const fetchStream = (
     stream: SliceFetchCall["stream"],
@@ -309,7 +468,7 @@ function createBackfillTransport(
 
   return {
     fetchCalendar: () => Promise.resolve({ results: [] }),
-    fetchExpansion: () => Promise.resolve({}),
+    fetchExpansion,
     fetchFeed: () => Promise.resolve({ items: [] }),
     fetchMessages: (input: SliceFetchInput) => fetchStream("messages", input),
     fetchMyWork: (input: SliceFetchInput) => fetchStream("my-work", input),

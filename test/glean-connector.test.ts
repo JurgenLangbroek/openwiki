@@ -556,7 +556,6 @@ describe("Glean connector", () => {
     expect(artifacts["expanded.json"]).toEqual({
       counts: {
         candidates: 2,
-        capped: 0,
         deduplicated: 0,
         expanded: 2,
         failed: 0,
@@ -1366,7 +1365,6 @@ describe("Glean connector", () => {
     expect(secondArtifacts[4]).toMatchObject({
       counts: {
         candidates: 0,
-        capped: 0,
         deduplicated: 0,
         expanded: 0,
         failed: 0,
@@ -1683,7 +1681,6 @@ describe("Glean connector", () => {
     expect(expanded).toEqual({
       counts: {
         candidates: 3,
-        capped: 0,
         deduplicated: 0,
         expanded: 3,
         failed: 0,
@@ -1725,58 +1722,30 @@ describe("Glean connector", () => {
     expect(expandedText).not.toContain("Authorization");
   });
 
-  test("caps expansion after ranking so lower-value candidates stay snippets", async () => {
+  test("expands every unseen candidate even when legacy config contains maxItems", async () => {
     await writeGleanConfig({
       enabled: true,
       expansion: { maxItems: 2, transcriptDatasources: ["fellow"] },
       instance: "acme",
     });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    const candidateIds = Array.from(
+      { length: 25 },
+      (_, index) => `uncapped-${index + 1}`,
+    );
     const fetchExpansion = vi.fn((input: { item: { id: string } }) =>
       Promise.resolve({ content: `Full ${input.item.id}` }),
     );
     const connector = createGleanConnector({
       transport: {
         ...createEmptyGleanTransport(),
-        fetchCalendar: () =>
-          Promise.resolve({
-            relatedDocuments: [
-              {
-                datasource: "fellow",
-                id: "tier-1",
-                url: "https://app.glean.com/go/tier-1",
-              },
-            ],
-            results: [],
-          }),
         fetchExpansion,
-        fetchFeed: () =>
-          Promise.resolve({
-            items: [
-              {
-                category: "MENTION",
-                id: "tier-3-feed",
-                url: "https://app.glean.com/go/tier-3-feed",
-              },
-            ],
-          }),
-        fetchMessages: () =>
-          Promise.resolve({
-            results: [
-              {
-                id: "tier-3-message",
-                url: "https://app.glean.com/go/tier-3-message",
-              },
-            ],
-          }),
         fetchMyWork: () =>
           Promise.resolve({
-            results: [
-              {
-                id: "tier-2",
-                url: "https://app.glean.com/go/tier-2",
-              },
-            ],
+            results: candidateIds.map((id) => ({
+              id,
+              url: `https://app.glean.com/go/${id}`,
+            })),
           }),
       },
     });
@@ -1795,22 +1764,17 @@ describe("Glean connector", () => {
     };
 
     expect(result.status).toBe("success");
-    expect(fetchExpansion).toHaveBeenCalledTimes(2);
-    expect(fetchExpansion.mock.calls.map(([input]) => input.item.id)).toEqual([
-      "tier-1",
-      "tier-2",
-    ]);
+    expect(fetchExpansion).toHaveBeenCalledTimes(25);
+    expect(fetchExpansion.mock.calls.map(([input]) => input.item.id)).toEqual(
+      candidateIds,
+    );
     expect(expanded.counts).toEqual({
-      candidates: 4,
-      capped: 2,
+      candidates: 25,
       deduplicated: 0,
-      expanded: 2,
+      expanded: 25,
       failed: 0,
     });
-    expect(expanded.items.map(({ id, tier }) => ({ id, tier }))).toEqual([
-      { id: "tier-1", tier: 1 },
-      { id: "tier-2", tier: 2 },
-    ]);
+    expect(expanded.items.map(({ id }) => id)).toEqual(candidateIds);
   });
 
   test("does not re-fetch an expanded id when it appears in another stream", async () => {
@@ -1876,7 +1840,6 @@ describe("Glean connector", () => {
     expect(expanded).toMatchObject({
       counts: {
         candidates: 1,
-        capped: 0,
         deduplicated: 1,
         expanded: 0,
         failed: 0,
@@ -1956,7 +1919,6 @@ describe("Glean connector", () => {
     expect(expanded).toMatchObject({
       counts: {
         candidates: 2,
-        capped: 0,
         deduplicated: 0,
         expanded: 1,
         failed: 1,
