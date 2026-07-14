@@ -31,7 +31,7 @@ A deliberately triggered Pull that walks a connector's history back until the so
 The authenticated check an ingestion run makes against a tenant to record which tools or streams it actually offers, written as a raw probe artifact (for example, `probe.json` for Glean's MCP tool catalog). Distinct from a Pull, which fetches evidence.
 
 **Content Expansion**:
-The deterministic Pull phase that fetches full document content (via Index Reads) for items the metadata pull surfaced, bounded by a per-run cap. Without it the wiki is built from titles and links only.
+The deterministic Pull phase that fetches full document content (via Index Reads) for every item the metadata pull surfaced. Items that cannot be expanded are recorded as failures with reasons. Without it the wiki is built from titles and links only.
 _Avoid_: expansion (bare — ambiguous with Exploration)
 
 **Exploration**:
