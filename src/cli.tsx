@@ -9,7 +9,7 @@ import {
 } from "./auth/configure.js";
 import { startNgrokTunnel } from "./auth/ngrok.js";
 import { formatAuthProviderList, runOAuthAuth } from "./auth/oauth.js";
-import { runOpenWikiBackfill } from "./backfill.js";
+import { runOpenWikiBackfill, type SourceBackfillResult } from "./backfill.js";
 import { ensureCodeModeRepoSetup } from "./code-mode.js";
 import {
   helpContent,
@@ -3736,7 +3736,7 @@ async function runBackfillCommand(
     process.stdout.write("\nBackfill summary\n");
     for (const sourceResult of result.results) {
       process.stdout.write(
-        `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)\n`,
+        `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)${formatBackfillSynthesisOutcome(sourceResult.synthesis)}\n`,
       );
     }
 
@@ -3750,6 +3750,22 @@ async function runBackfillCommand(
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
   }
+}
+
+function formatBackfillSynthesisOutcome(
+  synthesis: SourceBackfillResult["synthesis"],
+): string {
+  if (!synthesis) {
+    return "";
+  }
+  if (synthesis.status === "synthesized") {
+    return `; synthesized ${synthesis.chunkCount} chunk(s) (${synthesis.itemCount} items)`;
+  }
+  if (synthesis.status === "error") {
+    return `; synthesis error: ${synthesis.message ?? "unknown error"}`;
+  }
+
+  return `; synthesis skipped (${synthesis.itemCount} items)`;
 }
 
 async function runExploreCommand(

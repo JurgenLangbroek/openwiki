@@ -1,4 +1,8 @@
 import type { OpenWikiRunEvent } from "./agent/types.js";
+import {
+  runBackfillSynthesis,
+  type BackfillSynthesisSummary,
+} from "./backfill-synthesis.js";
 import { createRunId } from "./connectors/io.js";
 import { createConnectorRegistry } from "./connectors/registry.js";
 import type {
@@ -14,6 +18,7 @@ import {
 import {
   readOpenWikiOnboardingConfig,
   type OnboardingSourceInstanceConfig,
+  type OpenWikiOnboardingConfig,
 } from "./onboarding.js";
 import { ensureOpenWikiHome } from "./openwiki-home.js";
 import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
@@ -25,6 +30,7 @@ export type SourceBackfillResult = {
   rawFiles: string[];
   sourceInstanceId: string;
   status: ConnectorIngestResult["status"];
+  synthesis?: BackfillSynthesisSummary;
 };
 
 export type OpenWikiBackfillResult = {
@@ -62,6 +68,7 @@ export async function runOpenWikiBackfill(
     const connector = registry[sourceConfig.connectorId];
     results.push(
       await runSourceBackfill({
+        config,
         connector,
         emit: options.onEvent,
         sourceConfig,
@@ -73,10 +80,12 @@ export async function runOpenWikiBackfill(
 }
 
 async function runSourceBackfill({
+  config,
   connector,
   emit,
   sourceConfig,
 }: {
+  config: OpenWikiOnboardingConfig;
   connector: ConnectorRuntime;
   emit?: (event: OpenWikiRunEvent) => void;
   sourceConfig: OnboardingSourceInstanceConfig;
@@ -125,13 +134,24 @@ async function runSourceBackfill({
         : "none"
     }\n`,
   );
+  const synthesis =
+    backfillPull.status === "success" && backfillPull.rawFiles.length > 0
+      ? await runBackfillSynthesis({
+          config,
+          connector,
+          emit,
+          pull: backfillPull,
+          sourceConfig,
+        })
+      : undefined;
   return {
     backfillPull,
     connectorId: connector.id,
     displayName,
     rawFiles: backfillPull.rawFiles,
     sourceInstanceId: sourceConfig.id,
-    status: backfillPull.status,
+    status: synthesis?.status === "error" ? "error" : backfillPull.status,
+    ...(synthesis ? { synthesis } : {}),
   };
 }
 
