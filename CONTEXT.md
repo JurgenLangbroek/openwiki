@@ -24,6 +24,9 @@ The agent step that reads raw items and updates Brain Wiki pages, assigning each
 The deterministic, scheduled part of ingestion: a connector fetches a bounded window of raw items with no agent involvement. Reproducible for a given window.
 _Avoid_: sync, scrape
 
+**Run Ledger**:
+The human-readable per-run record every run (ingest, backfill, explore) writes into the Brain Wiki's source notes: items pulled per stream and slice, every Content Expansion outcome with failure reasons, every Escalation with the downstream tool used, and the current Backfill watermark. Machine-generated at /sources/<connector>-run-ledger.md; never edited by the synthesis agent.
+
 **Backfill**:
 A deliberately triggered Pull that walks a connector's history back until the source runs dry, in date slices. Its watermark is a completeness receipt: an interrupted Backfill resumes where it stopped; a finished one records how far back the evidence provably reaches. Distinct from the standing window a scheduled Pull re-fetches.
 

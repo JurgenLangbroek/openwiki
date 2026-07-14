@@ -16,6 +16,7 @@ import {
   type OnboardingSourceInstanceConfig,
 } from "./onboarding.js";
 import { ensureOpenWikiHome } from "./openwiki-home.js";
+import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
 
 export type SourceBackfillResult = {
   backfillPull: ConnectorIngestResult;
@@ -83,6 +84,8 @@ async function runSourceBackfill({
   const displayName = sourceConfig.name ?? connector.displayName;
   emitText(emit, `\nStarting ${displayName} Backfill.\n`);
 
+  const fallbackRunId = createRunId();
+  const startedAt = new Date().toISOString();
   let backfillPull: ConnectorIngestResult;
   try {
     backfillPull = connector.backfill
@@ -96,12 +99,23 @@ async function runSourceBackfill({
       connectorId: connector.id,
       message: `${displayName} Backfill failed: ${getErrorMessage(error)}`,
       rawFiles: [],
-      runId: createRunId(),
+      runId: fallbackRunId,
       statePath: `~/.openwiki/connectors/${connector.id}/state.json`,
       status: "error",
       warnings: [],
     };
   }
+
+  await writeRunLedgerBestEffort({
+    connectorId: connector.id,
+    displayName,
+    fallbackMessage: `${displayName} Backfill produced no result.`,
+    fallbackRunId,
+    mode: "backfill",
+    onError: (message) => emitText(emit, `${message}\n`),
+    result: backfillPull,
+    startedAt,
+  });
 
   emitText(
     emit,

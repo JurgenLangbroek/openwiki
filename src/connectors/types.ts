@@ -1,4 +1,5 @@
 import type { PolicyEvaluableTool, ToolWithPolicy } from "./tool-policy.js";
+import type { RunLedgerEvent } from "./run-ledger.js";
 import type { SliceWalkState } from "./slice-walker.js";
 
 export type ConnectorId =
@@ -39,6 +40,7 @@ export type ConnectorIngestOptions = {
 
 export type ConnectorIngestResult = {
   connectorId: ConnectorId;
+  ledgerEvents?: RunLedgerEvent[];
   liveTools?: (ToolWithPolicy<PolicyEvaluableTool> & {
     endpoint?: McpEndpointId;
   })[];

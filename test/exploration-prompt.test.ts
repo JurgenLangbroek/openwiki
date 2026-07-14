@@ -146,5 +146,8 @@ describe("exploration prompt", () => {
     expect(message).toContain("/people/<slug>.md");
     expect(message).toMatch(/Glean permalink.*markdown link/isu);
     expect(message).toMatch(/confidence labels/iu);
+    expect(message).toContain(
+      "Never edit /sources/glean-run-ledger.md files: they are machine-generated Run Ledger pages.",
+    );
   });
 });

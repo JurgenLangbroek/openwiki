@@ -5,6 +5,7 @@ import type {
   OpenWikiRunResult,
 } from "./agent/types.js";
 import {
+  createRunId,
   markRunSynthesized,
   markUnsynthesizedRunsSynthesized,
 } from "./connectors/io.js";
@@ -31,6 +32,7 @@ import {
   getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
 import { createLiveToolsSection } from "./live-tools-section.js";
+import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
 
 const INGESTION_WINDOW_HOURS = 24;
 
@@ -151,8 +153,12 @@ async function runSourceIngestion({
     `\nStarting ${getSourceDisplayName(connector, sourceConfig)} ingestion.\n`,
   );
 
+  const fallbackRunId = createRunId();
+  const startedAt = new Date().toISOString();
+  const onLedgerError = (message: string) => emitText(emit, `${message}\n`);
+  let deterministicPull: ConnectorIngestResult | undefined;
   try {
-    const deterministicPull =
+    deterministicPull =
       connector.posture !== "agentic"
         ? await connector.ingest({
             connectorConfig: sourceConfig.connectorConfig,
@@ -161,6 +167,16 @@ async function runSourceIngestion({
           })
         : undefined;
     const rawFiles = deterministicPull?.rawFiles ?? [];
+    await writeRunLedgerBestEffort({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      fallbackMessage: `No deterministic Pull was run for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "ingest",
+      onError: onLedgerError,
+      result: deterministicPull,
+      startedAt,
+    });
 
     if (
       deterministicPull &&
@@ -228,6 +244,18 @@ async function runSourceIngestion({
     };
   } catch (error) {
     const message = getErrorMessage(error);
+    await writeRunLedgerBestEffort({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      errorMessage: message,
+      fallbackMessage: `No deterministic Pull was run for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "ingest",
+      onError: onLedgerError,
+      result: deterministicPull,
+      startedAt,
+      status: "error",
+    });
     emitText(emit, `${connector.displayName} ingestion failed: ${message}\n`);
     return {
       connectorId: connector.id,
@@ -381,6 +409,7 @@ export function createSourceSynthesisPolicy(connectorId: ConnectorId): string {
 - Keep /open-questions.md for uncertainty about the user's core memory or wiki quality, not unresolved questions that merely appear inside source documents. Group similar questions under one topic key.
 - Keep /open-questions.md concise: Active entries use Owner, Seen, Evidence, and optional Notes; Answered entries use Evidence linking to the answer and Answered date; Stale entries use Why and Last seen.
 - Include Owner in /commitments.md entries when inferable: me, team, other:<name>, or unknown.
+- Never edit /sources/${connectorId}-run-ledger.md files: they are machine-generated Run Ledger pages. You may read them as evidence of run coverage.
 ${createConnectorSynthesisGuidance(connectorId)}
 `.trim();
 }
