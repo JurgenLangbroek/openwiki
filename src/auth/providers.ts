@@ -28,7 +28,7 @@ export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
     displayName: "Glean",
     id: "glean",
     resolveMcpResourceUrl: async () => (await resolveGleanTarget()).mcpUrl,
-    scopes: ["chat", "mcp", "search"],
+    scopes: ["chat", "documents", "feed", "mcp", "people", "search"],
     tokenMapping: {
       accessTokenEnvKey: OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY,
       clientIdEnvKey: OPENWIKI_GLEAN_CLIENT_ID_ENV_KEY,

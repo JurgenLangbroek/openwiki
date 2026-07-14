@@ -561,6 +561,7 @@ describe("Glean connector", () => {
         expanded: 2,
         failed: 0,
       },
+      failures: [],
       fetchedAt: "2026-07-13T12:00:00.000Z",
       items: [
         {
@@ -793,6 +794,144 @@ describe("Glean connector", () => {
     expect(JSON.parse(peopleRequest?.body ?? "{}")).toEqual({
       includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
     });
+  });
+
+  test("records the Glean error code when a full-content request is forbidden", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        const body =
+          typeof init?.body === "string"
+            ? (JSON.parse(init.body) as Record<string, unknown>)
+            : {};
+
+        if (url.endsWith("/rest/api/v1/feed")) {
+          return Promise.resolve(Response.json({ items: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/search")) {
+          return Promise.resolve(
+            Response.json({
+              results:
+                body.query === 'owner:"me"'
+                  ? [
+                      {
+                        document: {
+                          id: "restricted-document-1",
+                          url: "https://app.glean.com/go/restricted-document-1",
+                        },
+                      },
+                    ]
+                  : [],
+            }),
+          );
+        }
+        if (url.endsWith("/rest/api/v1/people")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/getdocuments")) {
+          return Promise.resolve(
+            Response.json(
+              {
+                error: "insufficient_scope",
+                error_description: "insufficient scopes",
+              },
+              { status: 403, statusText: "Forbidden" },
+            ),
+          );
+        }
+
+        const request = body as { id?: number; method?: string };
+        if (request.id === undefined) {
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        return Promise.resolve(
+          Response.json({
+            id: request.id,
+            jsonrpc: "2.0",
+            result: request.method === "tools/list" ? { tools: [] } : {},
+          }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().ingest();
+    const expanded = parseJsonObject(
+      await readFile(
+        result.rawFiles.find(
+          (file) => path.basename(file) === "expanded.json",
+        )!,
+        "utf8",
+      ),
+    );
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toContain(
+      "Glean expanded fetch failed for restricted-document-1: Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+    );
+    expect(expanded).toMatchObject({
+      counts: { failed: 1 },
+      failures: [
+        {
+          id: "restricted-document-1",
+          reason:
+            "Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+        },
+      ],
+    });
+  });
+
+  test("does not mask an insufficient-scope feed response as tenant unavailability", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url.endsWith("/rest/api/v1/feed")) {
+          return Promise.resolve(
+            Response.json(
+              {
+                error: "insufficient_scope",
+                error_description: "insufficient scopes",
+              },
+              { status: 403, statusText: "Forbidden" },
+            ),
+          );
+        }
+        if (url.endsWith("/rest/api/v1/search")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/people")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+
+        const body = typeof init?.body === "string" ? init.body : "{}";
+        const request = JSON.parse(body) as { id?: number; method?: string };
+        if (request.id === undefined) {
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        return Promise.resolve(
+          Response.json({
+            id: request.id,
+            jsonrpc: "2.0",
+            result: request.method === "tools/list" ? { tools: [] } : {},
+          }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toContain(
+      "Glean feed pull failed: Glean /rest/api/v1/feed request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+    );
+    expect(result.warnings.join(" ")).not.toMatch(
+      /feed endpoint is unavailable for this tenant/iu,
+    );
   });
 
   test("records messaging content separately from my-work search results", async () => {
@@ -1361,6 +1500,102 @@ describe("Glean connector", () => {
     ]);
   });
 
+  test.each(["success", "failure"])(
+    "records Fellow transcript Content Expansion %s in the raw artifact",
+    async (outcome) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
+      await writeGleanConfig({ enabled: true, instance: "acme" });
+      process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+      const failureReason =
+        "Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)";
+      const connector = createGleanConnector({
+        transport: {
+          ...createEmptyGleanTransport(),
+          fetchCalendar: () =>
+            Promise.resolve({
+              relatedDocuments: [
+                {
+                  datasource: "fellow",
+                  id: "fellow-transcript-1",
+                  title: "Fellow planning transcript",
+                  url: "https://app.glean.com/go/fellow-transcript-1",
+                },
+              ],
+              results: [],
+            }),
+          fetchExpansion: () =>
+            outcome === "success"
+              ? Promise.resolve({ text: "Fellow transcript full text" })
+              : Promise.reject(
+                  Object.assign(new Error(failureReason), {
+                    errorCode: "insufficient_scope",
+                    status: 403,
+                  }),
+                ),
+        },
+      });
+
+      const result = await connector.ingest();
+      const calendar = parseJsonObject(
+        await readFile(
+          result.rawFiles.find(
+            (file) => path.basename(file) === "calendar.json",
+          )!,
+          "utf8",
+        ),
+      );
+      const expanded = parseJsonObject(
+        await readFile(
+          result.rawFiles.find(
+            (file) => path.basename(file) === "expanded.json",
+          )!,
+          "utf8",
+        ),
+      );
+
+      expect(result.status).toBe("success");
+      expect(calendar).toMatchObject({
+        items: [
+          {
+            datasource: "fellow",
+            id: "fellow-transcript-1",
+            kind: "document-activity",
+          },
+        ],
+      });
+      if (outcome === "success") {
+        expect(expanded).toMatchObject({
+          counts: { expanded: 1, failed: 0 },
+          failures: [],
+          items: [
+            {
+              content: "Fellow transcript full text",
+              id: "fellow-transcript-1",
+              sourceStream: "calendar",
+              tier: 1,
+            },
+          ],
+        });
+      } else {
+        expect(result.warnings).toContain(
+          `Glean expanded fetch failed for fellow-transcript-1: ${failureReason}`,
+        );
+        expect(expanded).toMatchObject({
+          counts: { expanded: 0, failed: 1 },
+          failures: [
+            {
+              id: "fellow-transcript-1",
+              reason: failureReason,
+              sourceStream: "calendar",
+            },
+          ],
+          items: [],
+        });
+      }
+    },
+  );
+
   test("expands distinct candidates in tier order with full-content provenance", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
@@ -1453,6 +1688,7 @@ describe("Glean connector", () => {
         expanded: 3,
         failed: 0,
       },
+      failures: [],
       fetchedAt: "2026-07-13T12:00:00.000Z",
       items: [
         {
@@ -1658,7 +1894,14 @@ describe("Glean connector", () => {
         ...createEmptyGleanTransport(),
         fetchExpansion: ({ item }) =>
           item.id === "fails-1"
-            ? Promise.reject(new Error("document unavailable"))
+            ? Promise.reject(
+                Object.assign(
+                  new Error(
+                    "Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+                  ),
+                  { errorCode: "insufficient_scope", status: 403 },
+                ),
+              )
             : Promise.resolve({ text: "Working full text" }),
         fetchMessages: () =>
           Promise.resolve({
@@ -1689,7 +1932,16 @@ describe("Glean connector", () => {
         )!,
         "utf8",
       ),
-    ) as { counts: Record<string, number>; items: { id: string }[] };
+    ) as {
+      counts: Record<string, number>;
+      failures: {
+        id: string;
+        reason: string;
+        sourceStream: string;
+        url?: string;
+      }[];
+      items: { id: string }[];
+    };
     const state = JSON.parse(
       await readFile(
         path.join(openWikiHome, "connectors", "glean", "state.json"),
@@ -1699,7 +1951,7 @@ describe("Glean connector", () => {
 
     expect(result.status).toBe("success");
     expect(result.warnings).toContain(
-      "Glean expanded fetch failed for fails-1: document unavailable",
+      "Glean expanded fetch failed for fails-1: Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
     );
     expect(expanded).toMatchObject({
       counts: {
@@ -1709,6 +1961,15 @@ describe("Glean connector", () => {
         expanded: 1,
         failed: 1,
       },
+      failures: [
+        {
+          id: "fails-1",
+          reason:
+            "Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+          sourceStream: "my-work",
+          url: "https://app.glean.com/go/fails-1",
+        },
+      ],
       items: [{ id: "works-1" }],
     });
     expect(state.seenIds.expanded).toEqual(["works-1"]);
@@ -1810,44 +2071,46 @@ describe("Glean connector", () => {
     ]);
   });
 
-  test("keeps the probe successful when the tenant feed endpoint is unavailable", async () => {
-    await writeGleanConfig({ enabled: true, instance: "acme" });
-    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
-    const unavailableError = Object.assign(new Error("Not Found"), {
-      status: 404,
-    });
-    const connector = createGleanConnector({
-      transport: {
-        ...createEmptyGleanTransport(),
-        fetchFeed: () => Promise.reject(unavailableError),
-        listTools: () => Promise.resolve([{ name: "search" }]),
-      },
-    });
+  test.each([403, 404])(
+    "keeps the probe successful when a %i response means the tenant feed endpoint is unavailable",
+    async (status) => {
+      await writeGleanConfig({ enabled: true, instance: "acme" });
+      process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+      const statusText = status === 403 ? "Forbidden" : "Not Found";
+      const unavailableError = Object.assign(new Error(statusText), { status });
+      const connector = createGleanConnector({
+        transport: {
+          ...createEmptyGleanTransport(),
+          fetchFeed: () => Promise.reject(unavailableError),
+          listTools: () => Promise.resolve([{ name: "search" }]),
+        },
+      });
 
-    const result = await connector.ingest();
+      const result = await connector.ingest();
 
-    expect(result.status).toBe("success");
-    expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
-      "probe.json",
-      "gateway-probe.json",
-      "my-work.json",
-      "messages.json",
-      "calendar.json",
-      "expanded.json",
-    ]);
-    expect(result.warnings.join(" ")).toMatch(/feed endpoint.*unavailable/iu);
+      expect(result.status).toBe("success");
+      expect(result.rawFiles.map((file) => path.basename(file))).toEqual([
+        "probe.json",
+        "gateway-probe.json",
+        "my-work.json",
+        "messages.json",
+        "calendar.json",
+        "expanded.json",
+      ]);
+      expect(result.warnings.join(" ")).toMatch(/feed endpoint.*unavailable/iu);
 
-    const state = JSON.parse(
-      await readFile(
-        path.join(openWikiHome, "connectors", "glean", "state.json"),
-        "utf8",
-      ),
-    ) as { runs: { status: string; warnings: string[] }[] };
-    expect(state.runs[0]).toMatchObject({
-      status: "success",
-      warnings: result.warnings,
-    });
-  });
+      const state = JSON.parse(
+        await readFile(
+          path.join(openWikiHome, "connectors", "glean", "state.json"),
+          "utf8",
+        ),
+      ) as { runs: { status: string; warnings: string[] }[] };
+      expect(state.runs[0]).toMatchObject({
+        status: "success",
+        warnings: result.warnings,
+      });
+    },
+  );
 });
 
 describe("Glean live-tool discovery", () => {
@@ -1984,7 +2247,7 @@ describe("Glean OAuth provider", () => {
     const provider = getAuthProvider("glean");
     expect(provider).toMatchObject({
       clientAuth: "none",
-      scopes: ["chat", "mcp", "search"],
+      scopes: ["chat", "documents", "feed", "mcp", "people", "search"],
       tokenMapping: {
         accessTokenEnvKey: "OPENWIKI_GLEAN_ACCESS_TOKEN",
         clientIdEnvKey: "OPENWIKI_GLEAN_CLIENT_ID",
