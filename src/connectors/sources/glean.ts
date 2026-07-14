@@ -590,6 +590,10 @@ type ExpansionPullResult = {
   seenIds: string[];
   warnings: string[];
 };
+type GleanSearchFacetFilter = {
+  fieldName: string;
+  values: { relationType: string; value: string }[];
+};
 type PulledEvidenceStream = {
   items: JsonObject[];
   stream: EvidenceStreamName;
@@ -643,11 +647,12 @@ function createDefaultTransport(
         await Promise.all(
           apps.map(
             async (app) =>
-              await fetchGleanSearch(
-                backendUrl,
-                `from:"me" app:${app}`,
-                sinceDate,
-              ),
+              await fetchGleanSearch(backendUrl, "", sinceDate, [
+                {
+                  fieldName: "app",
+                  values: [{ relationType: "EQUALS", value: app }],
+                },
+              ]),
           ),
         ),
       ),
@@ -680,6 +685,7 @@ async function fetchGleanSearch(
   backendUrl: string,
   query: string,
   sinceDate: string,
+  facetFilters: GleanSearchFacetFilter[] = [],
 ): Promise<unknown> {
   return await postGleanJson(backendUrl, "/rest/api/v1/search", {
     pageSize: 100,
@@ -690,6 +696,7 @@ async function fetchGleanSearch(
           fieldName: "last_updated_at",
           values: [{ relationType: "GT", value: sinceDate }],
         },
+        ...facetFilters,
       ],
     },
   });

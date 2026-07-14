@@ -767,12 +767,16 @@ describe("Glean connector", () => {
       },
       {
         pageSize: 100,
-        query: 'from:"me" app:slack',
+        query: "",
         requestOptions: {
           facetFilters: [
             {
               fieldName: "last_updated_at",
               values: [{ relationType: "GT", value: "2026-07-10" }],
+            },
+            {
+              fieldName: "app",
+              values: [{ relationType: "EQUALS", value: "slack" }],
             },
           ],
         },
@@ -789,6 +793,121 @@ describe("Glean connector", () => {
     expect(JSON.parse(peopleRequest?.body ?? "{}")).toEqual({
       includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
     });
+  });
+
+  test("records messaging content separately from my-work search results", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        const body =
+          typeof init?.body === "string"
+            ? (JSON.parse(init.body) as Record<string, unknown>)
+            : {};
+
+        if (url.endsWith("/rest/api/v1/search")) {
+          const requestOptions = body.requestOptions as
+            { facetFilters?: Array<{ fieldName?: string }> } | undefined;
+          const hasAppFacet = requestOptions?.facetFilters?.some(
+            ({ fieldName }) => fieldName === "app",
+          );
+          if (hasAppFacet) {
+            return Promise.resolve(
+              Response.json({
+                results: [
+                  {
+                    app: "slack",
+                    document: {
+                      datasource: "slack",
+                      id: "slack-message-1",
+                      title: "Atlas launch thread",
+                      url: "https://app.glean.com/go/slack-message-1",
+                    },
+                    snippets: [{ text: "Ship Atlas on Tuesday." }],
+                  },
+                ],
+              }),
+            );
+          }
+
+          const query = body.query;
+          const id = query === 'owner:"me"' ? "jira-issue-1" : "github-pr-1";
+          const datasource = query === 'owner:"me"' ? "jira" : "github";
+          return Promise.resolve(
+            Response.json({
+              results: [
+                {
+                  document: {
+                    datasource,
+                    id,
+                    title: `Work item from ${datasource}`,
+                    url: `https://app.glean.com/go/${id}`,
+                  },
+                },
+              ],
+            }),
+          );
+        }
+        if (url.endsWith("/rest/api/v1/feed")) {
+          return Promise.resolve(Response.json({ items: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/people")) {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (url.endsWith("/rest/api/v1/getdocuments")) {
+          return Promise.resolve(Response.json({ document: {} }));
+        }
+
+        const request = body as { id?: number; method?: string };
+        if (request.id === undefined) {
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        return Promise.resolve(
+          Response.json({
+            id: request.id,
+            jsonrpc: "2.0",
+            result: request.method === "tools/list" ? { tools: [] } : {},
+          }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    const rawDirectory = path.join(
+      openWikiHome,
+      "connectors",
+      "glean",
+      "raw",
+      result.runId,
+    );
+    const messages = parseJsonObject(
+      await readFile(path.join(rawDirectory, "messages.json"), "utf8"),
+    );
+    const myWork = parseJsonObject(
+      await readFile(path.join(rawDirectory, "my-work.json"), "utf8"),
+    );
+    expect(messages).toMatchObject({
+      items: [
+        {
+          app: "slack",
+          datasource: "slack",
+          id: "slack-message-1",
+          snippet: "Ship Atlas on Tuesday.",
+        },
+      ],
+      stream: "messages",
+    });
+    expect(myWork).toMatchObject({
+      items: [{ id: "jira-issue-1" }, { id: "github-pr-1" }],
+      stream: "my-work",
+    });
+    expect(messages.items).not.toEqual(myWork.items);
   });
 
   test("refreshes once and retries the default feed request after a 401", async () => {
