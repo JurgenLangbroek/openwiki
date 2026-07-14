@@ -24,12 +24,22 @@ The agent step that reads raw items and updates Brain Wiki pages, assigning each
 The deterministic, scheduled part of ingestion: a connector fetches a bounded window of raw items with no agent involvement. Reproducible for a given window.
 _Avoid_: sync, scrape
 
+**Backfill**:
+A deliberately triggered Pull that walks a connector's history back until the source runs dry, in date slices. Its watermark is a completeness receipt: an interrupted Backfill resumes where it stopped; a finished one records how far back the evidence provably reaches. Distinct from the standing window a scheduled Pull re-fetches.
+
 **Capability Probe**:
 The authenticated check an ingestion run makes against a tenant to record which tools or streams it actually offers, written as a raw probe artifact (for example, `probe.json` for Glean's MCP tool catalog). Distinct from a Pull, which fetches evidence.
+
+**Content Expansion**:
+The deterministic Pull phase that fetches full document content (via Index Reads) for items the metadata pull surfaced, bounded by a per-run cap. Without it the wiki is built from titles and links only.
+_Avoid_: expansion (bare — ambiguous with Exploration)
 
 **Exploration**:
 Agent-driven evidence gathering during synthesis: the agent decides live which questions to ask a connector's tools (search, chat, document reads) to deepen a page.
 _Avoid_: agentic discovery (code-level flag name)
+
+**Escalation**:
+The Exploration move of re-reading evidence from the live underlying datasource (a Gateway Read) when the Index Read's cached content is missing or insufficient. Index first, gateway on insufficiency.
 
 **Gateway Read**:
 A read executed against the live underlying datasource (Gmail, Jira, Confluence, Calendar) through an intermediary's tool gateway, as opposed to reading that intermediary's index.
