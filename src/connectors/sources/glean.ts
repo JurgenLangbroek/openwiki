@@ -580,15 +580,27 @@ type ExpansionCounts = {
   expanded: number;
   failed: number;
 };
+type ExpansionFailure = {
+  id: string;
+  reason: string;
+  sourceStream: EvidenceStreamName;
+  title?: string;
+  url?: string;
+};
 type ExpansionPullResult = {
   artifact: {
     counts: ExpansionCounts;
+    failures: ExpansionFailure[];
     fetchedAt: string;
     items: JsonObject[];
     stream: "expanded";
   };
   seenIds: string[];
   warnings: string[];
+};
+type GleanErrorDetail = {
+  detail?: string;
+  errorCode?: string;
 };
 type GleanSearchFacetFilter = {
   fieldName: string;
@@ -750,11 +762,15 @@ async function parseGleanJsonResponse(
   pathname: string,
 ): Promise<unknown> {
   if (!response.ok) {
+    const { detail, errorCode } = await readGleanErrorDetail(response);
+    const status = `${response.status} ${response.statusText}`.trim();
+    const detailSuffix = detail ? ` (${detail})` : "";
     throw Object.assign(
-      new Error(
-        `Glean ${pathname} request failed: ${response.status} ${response.statusText}`,
-      ),
-      { status: response.status },
+      new Error(`Glean ${pathname} request failed: ${status}${detailSuffix}`),
+      {
+        ...(errorCode ? { errorCode } : {}),
+        status: response.status,
+      },
     );
   }
 
@@ -823,8 +839,8 @@ async function pullExpandedStream({
   const selectedCandidates = unseenCandidates.slice(0, maxItems);
   const items: JsonObject[] = [];
   const expandedIds: string[] = [];
+  const failures: ExpansionFailure[] = [];
   const warnings: string[] = [];
-  let failed = 0;
 
   for (const candidate of selectedCandidates) {
     try {
@@ -845,9 +861,16 @@ async function pullExpandedStream({
       );
       expandedIds.push(candidate.id);
     } catch (error) {
-      failed += 1;
+      const reason = readErrorReason(error);
+      failures.push({
+        id: candidate.id,
+        reason,
+        sourceStream: candidate.sourceStream,
+        ...(candidate.title ? { title: candidate.title } : {}),
+        ...(candidate.url ? { url: candidate.url } : {}),
+      });
       warnings.push(
-        `Glean expanded fetch failed for ${candidate.id}: ${readErrorReason(error)}`,
+        `Glean expanded fetch failed for ${candidate.id}: ${reason}`,
       );
     }
   }
@@ -859,8 +882,9 @@ async function pullExpandedStream({
         capped: unseenCandidates.length - selectedCandidates.length,
         deduplicated: candidates.length - unseenCandidates.length,
         expanded: items.length,
-        failed,
+        failed: failures.length,
       },
+      failures,
       fetchedAt,
       items,
       stream: "expanded",
@@ -1428,12 +1452,45 @@ function readErrorReason(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function readGleanErrorDetail(
+  response: Response,
+): Promise<GleanErrorDetail> {
+  let errorBody: unknown;
+  try {
+    errorBody = await response.json();
+  } catch {
+    return {};
+  }
+  if (!isJsonObject(errorBody)) {
+    return {};
+  }
+
+  const errorCode = readString(errorBody, "error");
+  const errorDescription = readString(
+    errorBody,
+    "error_description",
+    "message",
+  );
+  if (!errorCode) {
+    return errorDescription ? { detail: errorDescription } : {};
+  }
+
+  return {
+    detail: errorDescription ? `${errorCode}: ${errorDescription}` : errorCode,
+    errorCode,
+  };
+}
+
 function isFeedEndpointUnavailable(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("status" in error)) {
     return false;
   }
 
-  return error.status === 403 || error.status === 404;
+  const errorCode = "errorCode" in error ? error.errorCode : undefined;
+  return (
+    error.status === 404 ||
+    (error.status === 403 && errorCode !== "insufficient_scope")
+  );
 }
 
 function createEmptyResult(
