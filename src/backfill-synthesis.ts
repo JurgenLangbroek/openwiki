@@ -11,12 +11,14 @@ import {
   readConnectorState,
   writeRawJson,
 } from "./connectors/io.js";
+import type { RunLedgerEscalationEvent } from "./connectors/run-ledger.js";
 import type {
   ConnectorIngestResult,
   ConnectorRunSummary,
   ConnectorRuntime,
 } from "./connectors/types.js";
 import { createSourceSynthesisPolicy } from "./ingestion.js";
+import { createEscalationSection } from "./live-tools-section.js";
 import type {
   OnboardingSourceInstanceConfig,
   OpenWikiOnboardingConfig,
@@ -103,12 +105,14 @@ export async function runBackfillSynthesis({
   config,
   connector,
   emit,
+  onEscalation,
   pull,
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
   connector: ConnectorRuntime;
   emit?: (event: OpenWikiRunEvent) => void;
+  onEscalation?: (event: RunLedgerEscalationEvent) => void;
   pull: ConnectorIngestResult;
   sourceConfig: OnboardingSourceInstanceConfig;
 }): Promise<BackfillSynthesisSummary> {
@@ -167,6 +171,7 @@ export async function runBackfillSynthesis({
       );
       await runOpenWikiAgent("update", cwd, {
         isFollowup: false,
+        onEscalation,
         onEvent: emit,
         outputMode: "local-wiki",
         threadId: createOpenWikiThreadId(cwd),
@@ -237,7 +242,7 @@ Source-specific instructions:
 ${ingestionGoal || "(not provided)"}
 
 Reusable synthesis policy:
-${createSourceSynthesisPolicy(connector.id)}
+${createSourceSynthesisPolicy(connector.id)}${createEscalationSection(connector, "synthesis")}
 
 Backfill-history precedence:
 - The backfill-history instructions below OVERRIDE the reusable policy wherever they conflict. In particular, the reusable policy's /commitments.md and current-status routing does not apply to backfilled history.

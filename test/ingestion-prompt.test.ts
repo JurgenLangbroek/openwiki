@@ -184,6 +184,38 @@ describe("source synthesis policy", () => {
     expect(message).not.toContain("jira_add_comment");
   });
 
+  test("directs Glean synthesis to escalate missing or thin index evidence", () => {
+    const connector = createConnectorRegistry().glean;
+    const message = createSourceUpdateMessage({
+      config: { sourceInstances: [], sources: {}, version: 1 },
+      connector,
+      deterministicPull: {
+        connectorId: "glean",
+        message: "Pulled fixture evidence.",
+        rawFiles: ["/tmp/feed.json"],
+        runId: "run-1",
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings: [],
+      },
+      rawFiles: ["/tmp/feed.json"],
+      sourceConfig: { connectorId: "glean", id: "glean-primary" },
+    });
+
+    expect(message).toMatch(/Prefer the index.*cached copy/iu);
+    expect(message).toContain("openwiki_find_gateway_datasource_tools");
+    expect(message).toContain("openwiki_gateway_datasource_read");
+    expect(message).toMatch(/cached copy.*missing or too thin.*escalate/isu);
+    expect(message).toMatch(
+      /write-shaped downstream tools are always refused/iu,
+    );
+    expect(message).toMatch(/re-reading the same document.*refused/iu);
+    expect(message).toContain(
+      "Every escalation is recorded in this source's Run Ledger",
+    );
+    expect(message).not.toContain("generally available");
+  });
+
   test("omits the live-tools section when a hybrid pull has no allowed tools", () => {
     const connector = createConnectorRegistry().glean;
     const message = createSourceUpdateMessage({

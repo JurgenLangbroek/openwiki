@@ -76,7 +76,27 @@ beforeEach(async () => {
     status: "success",
     warnings: [],
   });
-  mocks.runAgent.mockResolvedValue({ command: "update", model: "fixture" });
+  mocks.runAgent.mockImplementation(
+    (_command: string, _cwd: string, options: Record<string, unknown>) => {
+      const onEscalation = options.onEscalation as
+        ((event: Record<string, unknown>) => void) | undefined;
+      onEscalation?.({
+        outcome: "ok",
+        serverId: "jira-primary",
+        target: '{"issueKey":"OW-38"}',
+        toolName: "JIRA_GET_ISSUE",
+        type: "escalation",
+      });
+      onEscalation?.({
+        outcome: "failed",
+        reason: "write-shaped downstream tool refused",
+        serverId: "jira-primary",
+        toolName: "JIRA_ADD_COMMENT",
+        type: "escalation",
+      });
+      return Promise.resolve({ command: "update", model: "fixture" });
+    },
+  );
 });
 
 afterEach(async () => {
@@ -96,11 +116,18 @@ describe("runOpenWikiExploration", () => {
       results: [{ connectorId: "glean", status: "agent-updated" }],
     });
 
-    await expect(
-      readFile(
-        path.join(openWikiHome, "wiki", "sources", "glean-run-ledger.md"),
-        "utf8",
-      ),
-    ).resolves.toContain("## Run explore-run-1 — explore — success");
+    const page = await readFile(
+      path.join(openWikiHome, "wiki", "sources", "glean-run-ledger.md"),
+      "utf8",
+    );
+
+    expect(page).toContain("## Run explore-run-1 — explore — success");
+    expect(page).toContain(
+      '- JIRA_GET_ISSUE on jira-primary — {"issueKey":"OW-38"} — ok',
+    );
+    expect(page).toContain(
+      "- JIRA_ADD_COMMENT on jira-primary — FAILED (write-shaped downstream tool refused)",
+    );
+    expect(page.match(/^## Run explore-run-1 /gmu)).toHaveLength(1);
   });
 });

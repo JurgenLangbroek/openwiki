@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { RunLedger } from "../src/connectors/run-ledger.ts";
 import {
   buildRunLedgerFromResult,
+  createRunLedgerEscalationRecorder,
   getRunLedgerPath,
   writeRunLedger,
   writeRunLedgerBestEffort,
@@ -112,6 +113,45 @@ describe("buildRunLedgerFromResult", () => {
       status: "error",
     });
   });
+
+  test("appends escalations after connector-provided ledger events", () => {
+    const built = buildRunLedgerFromResult({
+      connectorId: "glean",
+      escalationEvents: [
+        {
+          outcome: "ok",
+          serverId: "jira-primary",
+          toolName: "JIRA_GET_ISSUE",
+          type: "escalation",
+        },
+      ],
+      fallbackMessage: "No Pull result.",
+      fallbackRunId: "fallback-run",
+      mode: "ingest",
+      result: {
+        connectorId: "glean",
+        ledgerEvents: [
+          {
+            counts: { deduplicated: 0, fetched: 1, new: 1 },
+            stream: "feed",
+            type: "pull",
+          },
+        ],
+        message: "Pulled evidence.",
+        rawFiles: [],
+        runId: "pull-run",
+        statePath: "~/.openwiki/connectors/glean/state.json",
+        status: "success",
+        warnings: [],
+      },
+      startedAt: "2026-07-14T10:00:00.000Z",
+    });
+
+    expect(built.events.map((event) => event.type)).toEqual([
+      "pull",
+      "escalation",
+    ]);
+  });
 });
 
 describe("writeRunLedgerBestEffort", () => {
@@ -133,5 +173,37 @@ describe("writeRunLedgerBestEffort", () => {
     expect(errors).toEqual([
       expect.stringMatching(/^Glean Run Ledger write failed:/u),
     ]);
+  });
+});
+
+describe("createRunLedgerEscalationRecorder", () => {
+  test("skips empty flushes and writes recorded escalations", async () => {
+    const recorder = createRunLedgerEscalationRecorder();
+    const input = {
+      connectorId: "glean" as const,
+      displayName: "Glean",
+      fallbackMessage: "No Pull result.",
+      fallbackRunId: "escalation-run",
+      mode: "explore" as const,
+      onError: () => undefined,
+      startedAt: "2026-07-14T10:00:00.000Z",
+    };
+
+    await recorder.flush(input);
+    await expect(readFile(getRunLedgerPath("glean"), "utf8")).rejects.toThrow(
+      /ENOENT/u,
+    );
+
+    recorder.record({
+      outcome: "ok",
+      serverId: "jira-primary",
+      toolName: "JIRA_GET_ISSUE",
+      type: "escalation",
+    });
+    await recorder.flush(input);
+
+    await expect(
+      readFile(getRunLedgerPath("glean"), "utf8"),
+    ).resolves.toContain("- JIRA_GET_ISSUE on jira-primary — ok");
   });
 });

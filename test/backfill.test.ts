@@ -537,6 +537,74 @@ describe("runOpenWikiBackfill", () => {
     ).resolves.toContain("## Run run-1 — backfill — success");
   });
 
+  test("rewrites the Backfill Run Ledger with synthesis escalations", async () => {
+    const runId = "run-with-escalation";
+    const slice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0001.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              id: "thin-index-document",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 1,
+      },
+    );
+    await writeConnectorState("glean", {
+      runs: [
+        {
+          at: "2026-07-01T00:00:00.000Z",
+          rawFiles: [slice],
+          runId,
+          status: "success",
+          warnings: [],
+        },
+      ],
+      version: 1,
+    });
+    mocks.gleanBackfill.mockResolvedValue({
+      connectorId: "glean",
+      message: "Backfill pulled thin index evidence.",
+      rawFiles: [slice],
+      runId,
+      statePath: "~/.openwiki/connectors/glean/state.json",
+      status: "success",
+      warnings: [],
+    });
+    mocks.runAgent.mockImplementation(
+      (_command: string, _cwd: string, options: Record<string, unknown>) => {
+        const onEscalation = options.onEscalation as
+          ((event: Record<string, unknown>) => void) | undefined;
+        onEscalation?.({
+          outcome: "ok",
+          serverId: "jira-primary",
+          target: '{"issueKey":"OW-38"}',
+          toolName: "JIRA_GET_ISSUE",
+          type: "escalation",
+        });
+        return Promise.resolve({ command: "update", model: "fixture" });
+      },
+    );
+
+    await runOpenWikiBackfill("ignored", { target: "glean" });
+
+    const page = await readFile(
+      path.join(openWikiHome, "wiki", "sources", "glean-run-ledger.md"),
+      "utf8",
+    );
+    expect(page).toContain(
+      '- JIRA_GET_ISSUE on jira-primary — {"issueKey":"OW-38"} — ok',
+    );
+    expect(page.match(/^## Run run-with-escalation /gmu)).toHaveLength(1);
+  });
+
   test("rejects a non-all target with no configured match", async () => {
     await expect(
       runOpenWikiBackfill("ignored", {

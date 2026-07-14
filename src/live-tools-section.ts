@@ -5,6 +5,31 @@ import type {
 
 const MAX_TOOL_DESCRIPTION_LENGTH = 140;
 
+export function createEscalationSection(
+  connector: ConnectorRuntime,
+  mode: "exploration" | "ingestion" | "synthesis",
+): string {
+  if (
+    connector.posture !== "hybrid" ||
+    !connector.mcpEndpoints?.includes("gateway")
+  ) {
+    return "";
+  }
+
+  const explorationGuidance =
+    mode === "exploration"
+      ? "\n- Gateway Datasource Reads are also generally available for targeted evidence gathering when the information an Active question needs never surfaces in the feed or index."
+      : "";
+
+  return `
+
+Escalation — index first, gateway on insufficiency:
+- Prefer the index for document content: read a document's cached copy with openwiki_call_mcp_tool (connectorId: "${connector.id}").
+- When the index's cached copy of a document you need is missing or too thin to work from, escalate: discover downstream datasource tools with openwiki_find_gateway_datasource_tools (connectorId: "${connector.id}"), then re-read that document from its live underlying datasource with openwiki_gateway_datasource_read using an exact discovered serverId and toolName.${explorationGuidance}
+- Escalate for specific documents or records, never to crawl a datasource. Every call is policed deny-by-default read-only; write-shaped downstream tools are always refused, and re-reading the same document within one run is refused.
+- Every escalation is recorded in this source's Run Ledger with the downstream tool used.`;
+}
+
 export function createLiveToolsSection(
   connector: ConnectorRuntime,
   result: ConnectorIngestResult,

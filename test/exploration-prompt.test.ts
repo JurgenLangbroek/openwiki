@@ -107,6 +107,31 @@ describe("exploration prompt", () => {
     expect(message).not.toContain("jira_add_comment");
   });
 
+  test("directs Glean exploration to escalate missing or thin index evidence", () => {
+    const message = createExplorationMessage({
+      config: baseConfig,
+      connector: createConnectorRegistry().glean,
+      discovery: discovery([]),
+      sourceConfig,
+    });
+
+    expect(message).toMatch(/index first, gateway on insufficiency/iu);
+    expect(message).toMatch(/Prefer the index.*cached copy/iu);
+    expect(message).toContain("openwiki_find_gateway_datasource_tools");
+    expect(message).toContain("openwiki_gateway_datasource_read");
+    expect(message).toMatch(/cached copy.*missing or too thin.*escalate/isu);
+    expect(message).toMatch(
+      /generally available.*targeted evidence gathering/isu,
+    );
+    expect(message).toMatch(
+      /write-shaped downstream tools are always refused/iu,
+    );
+    expect(message).toMatch(/re-reading the same document.*refused/iu);
+    expect(message).toContain(
+      "Every escalation is recorded in this source's Run Ledger",
+    );
+  });
+
   test("omits live-tool sections when discovery found no allowed tools", () => {
     const message = createExplorationMessage({
       config: baseConfig,
@@ -132,6 +157,7 @@ describe("exploration prompt", () => {
     expect(message).toMatch(/available OpenWiki connector tools.*MCP tools/isu);
     expect(message).not.toContain("Live index tools:");
     expect(message).not.toContain("Live gateway tools:");
+    expect(message).not.toContain("openwiki_gateway_datasource_read");
   });
 
   test("reuses Glean synthesis policy including permalink guidance", () => {

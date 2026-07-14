@@ -31,8 +31,14 @@ import {
   getConnectorConfigPath,
   getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
-import { createLiveToolsSection } from "./live-tools-section.js";
-import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
+import {
+  createEscalationSection,
+  createLiveToolsSection,
+} from "./live-tools-section.js";
+import {
+  createRunLedgerEscalationRecorder,
+  writeRunLedgerBestEffort,
+} from "./run-ledger-io.js";
 
 const INGESTION_WINDOW_HOURS = 24;
 
@@ -156,6 +162,7 @@ async function runSourceIngestion({
   const fallbackRunId = createRunId();
   const startedAt = new Date().toISOString();
   const onLedgerError = (message: string) => emitText(emit, `${message}\n`);
+  const escalationRecorder = createRunLedgerEscalationRecorder();
   let deterministicPull: ConnectorIngestResult | undefined;
   try {
     deterministicPull =
@@ -202,6 +209,7 @@ async function runSourceIngestion({
     const agentResult = await runOpenWikiAgent("update", cwd, {
       isFollowup: false,
       modelId,
+      onEscalation: escalationRecorder.record,
       onEvent: emit,
       outputMode: "local-wiki",
       threadId: createOpenWikiThreadId(cwd),
@@ -212,6 +220,17 @@ async function runSourceIngestion({
         rawFiles,
         sourceConfig,
       }),
+    });
+
+    await escalationRecorder.flush({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      fallbackMessage: `No deterministic Pull was run for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "ingest",
+      onError: onLedgerError,
+      result: deterministicPull,
+      startedAt,
     });
 
     if (!agentResult.skipped) {
@@ -248,6 +267,7 @@ async function runSourceIngestion({
       connectorId: connector.id,
       displayName: connector.displayName,
       errorMessage: message,
+      escalationEvents: escalationRecorder.events,
       fallbackMessage: `No deterministic Pull was run for ${connector.displayName}.`,
       fallbackRunId,
       mode: "ingest",
@@ -359,7 +379,7 @@ Deterministic pull result:
 - Status: ${deterministicPull.status}
 - Message: ${deterministicPull.message}
 - Raw data files:
-${formatRawFileList(rawFiles)}${createLiveToolsSection(connector, deterministicPull, "ingestion")}
+${formatRawFileList(rawFiles)}${createLiveToolsSection(connector, deterministicPull, "ingestion")}${createEscalationSection(connector, "ingestion")}
 
 Instructions:
 - Read the raw data files above before updating the wiki.
