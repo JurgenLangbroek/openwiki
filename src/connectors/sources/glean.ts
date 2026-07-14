@@ -18,8 +18,15 @@ import {
 import { listMcpTools, type McpToolDescriptor } from "../mcp-client.js";
 import { annotateToolsWithPolicy } from "../tool-policy.js";
 import { writeToolCatalog } from "../tool-catalog.js";
+import {
+  beginSliceWalk,
+  planNextSlice,
+  recordSlice,
+  type SliceWalkConfig,
+} from "../slice-walker.js";
 import type {
   ConnectorDefinition,
+  ConnectorIngestOptions,
   ConnectorIngestResult,
   ConnectorRetentionConfig,
   ConnectorRuntime,
@@ -39,6 +46,12 @@ export type ExpansionCandidate = {
   url?: string;
 };
 
+type GleanSlicedSearchInput = {
+  backendUrl: string;
+  sinceDate: string;
+  untilDate?: string;
+};
+
 export type GleanProbeTransport = {
   fetchCalendar: (input: { backendUrl: string }) => Promise<unknown>;
   fetchExpansion: (input: {
@@ -46,14 +59,8 @@ export type GleanProbeTransport = {
     item: ExpansionCandidate;
   }) => Promise<unknown>;
   fetchFeed: (input: { backendUrl: string }) => Promise<unknown>;
-  fetchMessages: (input: {
-    backendUrl: string;
-    sinceDate: string;
-  }) => Promise<unknown>;
-  fetchMyWork: (input: {
-    backendUrl: string;
-    sinceDate: string;
-  }) => Promise<unknown>;
+  fetchMessages: (input: GleanSlicedSearchInput) => Promise<unknown>;
+  fetchMyWork: (input: GleanSlicedSearchInput) => Promise<unknown>;
   listTools: (input: {
     endpoint: McpEndpointId;
     mcpUrl: string;
@@ -63,6 +70,12 @@ export type GleanProbeTransport = {
 type GleanConfig = GleanTargetConfig &
   ConnectorRetentionConfig & {
     allowedTools?: string[];
+    backfill?: {
+      boundaryBufferHours?: number;
+      emptySliceLimit?: number;
+      maxSlices?: number;
+      sliceDays?: number;
+    };
     enabled?: boolean;
     expansion?: {
       maxItems?: number;
@@ -85,7 +98,17 @@ const definition: ConnectorDefinition = {
   ],
 };
 
+export const GLEAN_SEARCH_PAGE_SIZE = 100;
+const GLEAN_STATE_PATH = "~/.openwiki/connectors/glean/state.json";
+
+const DEFAULT_BACKFILL_CONFIG: SliceWalkConfig = {
+  boundaryBufferHours: 24,
+  emptySliceLimit: 3,
+  maxSlices: 400,
+  sliceDays: 30,
+};
 const DEFAULT_GLEAN_CONFIG: GleanConfig = {
+  backfill: DEFAULT_BACKFILL_CONFIG,
   enabled: false,
   expansion: {
     maxItems: 20,
@@ -104,6 +127,10 @@ export function createGleanConnector(overrides?: {
 }): ConnectorRuntime {
   return {
     ...definition,
+    backfill: async (
+      options?: ConnectorIngestOptions,
+    ): Promise<ConnectorIngestResult> =>
+      await backfillGlean(overrides?.transport, options),
     discoverLiveTools: async (): Promise<ConnectorIngestResult> => {
       const preparation = await prepareGleanLiveTools(overrides?.transport);
       if (preparation.kind === "result") {
@@ -137,7 +164,7 @@ export function createGleanConnector(overrides?: {
         message: `Probed ${toolCount} MCP tool(s) at ${target.backendUrl}.`,
         rawFiles,
         runId,
-        statePath: "~/.openwiki/connectors/glean/state.json",
+        statePath: GLEAN_STATE_PATH,
         status: "success",
         warnings,
       };
@@ -308,12 +335,186 @@ export function createGleanConnector(overrides?: {
             : "All Glean evidence streams failed. Run openwiki auth glean to sign in again, then retry.",
         rawFiles,
         runId,
-        statePath: "~/.openwiki/connectors/glean/state.json",
+        statePath: GLEAN_STATE_PATH,
         status,
         warnings,
       };
     },
     resolveMcpConfig: resolveGleanMcpConfig,
+  };
+}
+
+async function backfillGlean(
+  transportOverride?: GleanProbeTransport,
+  options?: ConnectorIngestOptions,
+): Promise<ConnectorIngestResult> {
+  const preparation = await prepareGleanLiveTools(
+    transportOverride,
+    options?.connectorConfig,
+  );
+  if (preparation.kind === "result") {
+    return preparation.result;
+  }
+
+  const {
+    config,
+    fetchedAt,
+    liveTools,
+    rawFiles,
+    runId,
+    target,
+    transport,
+    warnings,
+  } = preparation;
+  const walkConfig = normalizeBackfillConfig(config.backfill);
+  let state = await readConnectorState("glean");
+  let walkState = beginSliceWalk({
+    now: fetchedAt,
+    resume: state.backfill,
+  });
+  const slicesBeforeRun = walkState.slicesWalked;
+  let pulledItemCount = 0;
+
+  while (true) {
+    const bounds = planNextSlice(walkState, walkConfig);
+    if (!bounds) {
+      break;
+    }
+
+    const sliceNumber = walkState.slicesWalked - slicesBeforeRun + 1;
+    const sliceFetchedAt = new Date().toISOString();
+    const [myWorkFetch, messagesFetch] = await Promise.allSettled([
+      transport.fetchMyWork({
+        backendUrl: target.backendUrl,
+        ...bounds,
+      }),
+      transport.fetchMessages({
+        backendUrl: target.backendUrl,
+        ...bounds,
+      }),
+    ]);
+    const myWork = pullBackfillStream({
+      fetchedAt: sliceFetchedAt,
+      fetch: myWorkFetch,
+      seenIds: state.seenIds?.["my-work"] ?? [],
+      stream: "my-work",
+      warnings,
+    });
+    const messages = pullBackfillStream({
+      fetchedAt: sliceFetchedAt,
+      fetch: messagesFetch,
+      seenIds: state.seenIds?.messages ?? [],
+      stream: "messages",
+      warnings,
+    });
+    appendFullPageWarning({
+      bounds,
+      fetchedCount: myWork.artifact.counts.fetched,
+      stream: "my-work",
+      warnings,
+    });
+    appendFullPageWarning({
+      bounds,
+      fetchedCount: messages.artifact.counts.fetched,
+      stream: "messages",
+      warnings,
+    });
+
+    if (!myWork.succeeded || !messages.succeeded) {
+      await writeConnectorState(
+        "glean",
+        updateStateWithRun(
+          { ...state, backfill: walkState },
+          {
+            at: fetchedAt,
+            rawFiles,
+            runId,
+            status: "error",
+            warnings,
+          },
+        ),
+      );
+      return createGleanBackfillResult({
+        message: `Glean Backfill stream fetch failed in slice ${sliceNumber}; history remains provably covered back to ${walkState.watermark.slice(0, 10)}.`,
+        rawFiles,
+        runId,
+        status: "error",
+        warnings,
+      });
+    }
+
+    state = withSeenIds(state, "my-work", myWork.seenIds);
+    state = withSeenIds(state, "messages", messages.seenIds);
+
+    const newItemCount =
+      myWork.artifact.counts.new + messages.artifact.counts.new;
+    pulledItemCount += newItemCount;
+    rawFiles.push(
+      await writeRawJson(
+        "glean",
+        runId,
+        `backfill-slice-${String(sliceNumber).padStart(4, "0")}.json`,
+        {
+          bounds,
+          fetchedAt: sliceFetchedAt,
+          messages: messages.artifact,
+          myWork: myWork.artifact,
+          sliceNumber,
+        },
+      ),
+    );
+    walkState = recordSlice(walkState, { newItemCount }, walkConfig);
+    state = { ...state, backfill: walkState };
+    await writeConnectorState("glean", state);
+  }
+
+  const slicesWalked = walkState.slicesWalked - slicesBeforeRun;
+  const nextState = updateStateWithRun(
+    { ...state, backfill: walkState },
+    {
+      at: fetchedAt,
+      rawFiles,
+      runId,
+      status: "success",
+      warnings,
+    },
+  );
+  await writeConnectorState("glean", nextState);
+
+  return createGleanBackfillResult({
+    liveTools,
+    message: `Backfill walked ${slicesWalked} slice(s), pulled ${pulledItemCount} item(s); history reaches back to ${walkState.watermark.slice(0, 10)}.`,
+    rawFiles,
+    runId,
+    status: "success",
+    warnings,
+  });
+}
+
+function createGleanBackfillResult({
+  liveTools,
+  message,
+  rawFiles,
+  runId,
+  status,
+  warnings,
+}: {
+  liveTools?: ConnectorIngestResult["liveTools"];
+  message: string;
+  rawFiles: string[];
+  runId: string;
+  status: Extract<ConnectorIngestResult["status"], "error" | "success">;
+  warnings: string[];
+}): ConnectorIngestResult {
+  return {
+    connectorId: "glean",
+    ...(liveTools ? { liveTools } : {}),
+    message,
+    rawFiles,
+    runId,
+    statePath: GLEAN_STATE_PATH,
+    status,
+    warnings,
   };
 }
 
@@ -334,11 +535,12 @@ type GleanLiveToolsPreparation =
 
 async function prepareGleanLiveTools(
   transportOverride?: GleanProbeTransport,
+  connectorConfig?: Record<string, unknown>,
 ): Promise<GleanLiveToolsPreparation> {
   const runId = createRunId();
-  const config = await readConnectorConfig<GleanConfig>(
-    "glean",
-    DEFAULT_GLEAN_CONFIG,
+  const config = mergeGleanConfig(
+    await readConnectorConfig<GleanConfig>("glean", DEFAULT_GLEAN_CONFIG),
+    connectorConfig,
   );
   const transport =
     transportOverride ?? createDefaultTransport(config.messagingApps);
@@ -437,6 +639,23 @@ async function prepareGleanLiveTools(
     toolCount: defaultProbe.tools.length + gatewayToolCount,
     transport,
     warnings,
+  };
+}
+
+function mergeGleanConfig(
+  config: GleanConfig,
+  override: Record<string, unknown> | undefined,
+): GleanConfig {
+  if (!override) {
+    return config;
+  }
+
+  return {
+    ...config,
+    ...override,
+    backfill: isJsonObject(override.backfill)
+      ? { ...config.backfill, ...override.backfill }
+      : config.backfill,
   };
 }
 
@@ -634,6 +853,16 @@ type StreamPullResult = {
   artifact: { counts: StreamCounts; items: JsonObject[] };
   seenIds: string[];
 };
+type BackfillStreamArtifact = {
+  counts: StreamCounts;
+  error?: string;
+  items: JsonObject[];
+};
+type BackfillStreamPullResult = {
+  artifact: BackfillStreamArtifact;
+  seenIds: string[];
+  succeeded: boolean;
+};
 
 function createDefaultTransport(
   messagingApps: string[] | undefined,
@@ -654,26 +883,38 @@ function createDefaultTransport(
       await postGleanJson(backendUrl, "/rest/api/v1/feed", {
         categories: FEED_CATEGORIES,
       }),
-    fetchMessages: async ({ backendUrl, sinceDate }) =>
+    fetchMessages: async ({ backendUrl, sinceDate, untilDate }) =>
       mergeSearchResponses(
         await Promise.all(
           apps.map(
             async (app) =>
-              await fetchGleanSearch(backendUrl, "", sinceDate, [
-                {
-                  fieldName: "app",
-                  values: [{ relationType: "EQUALS", value: app }],
-                },
-              ]),
+              await fetchGleanSearch(
+                backendUrl,
+                "",
+                sinceDate,
+                [
+                  {
+                    fieldName: "app",
+                    values: [{ relationType: "EQUALS", value: app }],
+                  },
+                ],
+                untilDate,
+              ),
           ),
         ),
       ),
-    fetchMyWork: async ({ backendUrl, sinceDate }) =>
+    fetchMyWork: async ({ backendUrl, sinceDate, untilDate }) =>
       mergeSearchResponses(
         await Promise.all(
           ['owner:"me"', 'from:"me"'].map(
             async (query) =>
-              await fetchGleanSearch(backendUrl, query, sinceDate),
+              await fetchGleanSearch(
+                backendUrl,
+                query,
+                sinceDate,
+                [],
+                untilDate,
+              ),
           ),
         ),
       ),
@@ -698,15 +939,19 @@ async function fetchGleanSearch(
   query: string,
   sinceDate: string,
   facetFilters: GleanSearchFacetFilter[] = [],
+  untilDate?: string,
 ): Promise<unknown> {
   return await postGleanJson(backendUrl, "/rest/api/v1/search", {
-    pageSize: 100,
+    pageSize: GLEAN_SEARCH_PAGE_SIZE,
     query,
     requestOptions: {
       facetFilters: [
         {
           fieldName: "last_updated_at",
-          values: [{ relationType: "GT", value: sinceDate }],
+          values: [
+            { relationType: "GT", value: sinceDate },
+            ...(untilDate ? [{ relationType: "LT", value: untilDate }] : []),
+          ],
         },
         ...facetFilters,
       ],
@@ -1017,6 +1262,74 @@ function pullDocumentStream({
     },
     seenIds: pulled.seenIds,
   };
+}
+
+function pullBackfillStream({
+  fetchedAt,
+  fetch,
+  seenIds,
+  stream,
+  warnings,
+}: {
+  fetchedAt: string;
+  fetch: PromiseSettledResult<unknown>;
+  seenIds: string[];
+  stream: Extract<DocumentStreamName, "messages" | "my-work">;
+  warnings: string[];
+}): BackfillStreamPullResult {
+  if (fetch.status === "rejected") {
+    const error = readErrorReason(fetch.reason);
+    warnings.push(createStreamWarning(stream, fetch.reason));
+    return {
+      artifact: {
+        counts: {
+          deduplicated: 0,
+          fetched: 0,
+          new: 0,
+          skipped: 0,
+        },
+        error,
+        items: [],
+      },
+      seenIds,
+      succeeded: false,
+    };
+  }
+
+  const pulled = pullDocumentStream({
+    fetchedAt,
+    response: fetch.value,
+    seenIds,
+    stream,
+  });
+  return {
+    artifact: {
+      counts: pulled.artifact.counts,
+      items: pulled.artifact.items,
+    },
+    seenIds: pulled.seenIds,
+    succeeded: true,
+  };
+}
+
+function appendFullPageWarning({
+  bounds,
+  fetchedCount,
+  stream,
+  warnings,
+}: {
+  bounds: { sinceDate: string; untilDate: string };
+  fetchedCount: number;
+  stream: Extract<DocumentStreamName, "messages" | "my-work">;
+  warnings: string[];
+}): void {
+  if (fetchedCount < GLEAN_SEARCH_PAGE_SIZE) {
+    return;
+  }
+
+  warnings.push(
+    `Glean ${stream} slice ${bounds.sinceDate}..${bounds.untilDate} returned a full page (${fetchedCount}); items may have been trimmed — reduce backfill.sliceDays.`,
+  );
 }
 
 function pullCalendarStream({
@@ -1380,20 +1693,53 @@ function calculateSinceDate(fetchedAt: string, windowHours: number): string {
   return since.toISOString().slice(0, 10);
 }
 
+function normalizeBackfillConfig(
+  config: GleanConfig["backfill"],
+): SliceWalkConfig {
+  return {
+    boundaryBufferHours: normalizeNonNegativeNumber(
+      config?.boundaryBufferHours,
+      DEFAULT_BACKFILL_CONFIG.boundaryBufferHours,
+    ),
+    emptySliceLimit: normalizePositiveNumber(
+      config?.emptySliceLimit,
+      DEFAULT_BACKFILL_CONFIG.emptySliceLimit,
+    ),
+    maxSlices: normalizePositiveNumber(
+      config?.maxSlices,
+      DEFAULT_BACKFILL_CONFIG.maxSlices,
+    ),
+    sliceDays: normalizePositiveNumber(
+      config?.sliceDays,
+      DEFAULT_BACKFILL_CONFIG.sliceDays,
+    ),
+  };
+}
+
+function normalizeNonNegativeNumber(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : fallback;
+}
+
+function normalizePositiveNumber(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : fallback;
+}
+
 function normalizeWindowHours(windowHours: number | undefined): number {
-  return typeof windowHours === "number" &&
-    Number.isFinite(windowHours) &&
-    windowHours > 0
-    ? windowHours
-    : DEFAULT_WINDOW_HOURS;
+  return normalizePositiveNumber(windowHours, DEFAULT_WINDOW_HOURS);
 }
 
 function normalizeExpansionMaxItems(maxItems: number | undefined): number {
-  return typeof maxItems === "number" &&
-    Number.isFinite(maxItems) &&
-    maxItems > 0
-    ? maxItems
-    : DEFAULT_EXPANSION_MAX_ITEMS;
+  return normalizePositiveNumber(maxItems, DEFAULT_EXPANSION_MAX_ITEMS);
 }
 
 function normalizeMessagingApps(messagingApps: string[] | undefined): string[] {
@@ -1503,7 +1849,7 @@ function createEmptyResult(
     message,
     rawFiles: [],
     runId,
-    statePath: "~/.openwiki/connectors/glean/state.json",
+    statePath: GLEAN_STATE_PATH,
     status,
     warnings: [],
   };

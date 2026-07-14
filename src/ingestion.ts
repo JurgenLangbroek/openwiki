@@ -239,7 +239,7 @@ async function runSourceIngestion({
   }
 }
 
-function resolveIngestionSourceInstances(
+export function resolveIngestionSourceInstances(
   target: IngestionTarget,
   config: OpenWikiOnboardingConfig,
   { scheduledOnly }: { scheduledOnly: boolean },

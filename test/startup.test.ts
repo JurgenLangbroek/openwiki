@@ -78,6 +78,16 @@ afterEach(() => {
 });
 
 describe("resolveStartupCommand", () => {
+  test("passes Backfill commands through untouched", async () => {
+    const command: CliCommand = {
+      exitCode: 0,
+      kind: "backfill",
+      target: "glean",
+    };
+
+    await expect(resolveStartupCommand(command)).resolves.toBe(command);
+  });
+
   test("fails fast for non-TTY interactive chat without a message", async () => {
     const result = await resolveStartupCommand(
       {

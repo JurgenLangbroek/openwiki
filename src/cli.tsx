@@ -9,6 +9,7 @@ import {
 } from "./auth/configure.js";
 import { startNgrokTunnel } from "./auth/ngrok.js";
 import { formatAuthProviderList, runOAuthAuth } from "./auth/oauth.js";
+import { runOpenWikiBackfill } from "./backfill.js";
 import { ensureCodeModeRepoSetup } from "./code-mode.js";
 import {
   helpContent,
@@ -3440,6 +3441,7 @@ const parsedCommand = parseCommand(argv);
 if (
   (parsedCommand.kind === "run" && !parsedCommand.dryRun) ||
   parsedCommand.kind === "auth" ||
+  parsedCommand.kind === "backfill" ||
   parsedCommand.kind === "cron" ||
   parsedCommand.kind === "explore" ||
   parsedCommand.kind === "ingest" ||
@@ -3455,6 +3457,8 @@ const command = await resolveStartupCommand(parsedCommand, {
 
 if (command.kind === "auth") {
   await runAuthCommand(command);
+} else if (command.kind === "backfill") {
+  await runBackfillCommand(command);
 } else if (command.kind === "ngrok") {
   await runNgrokCommand(command);
 } else if (command.kind === "cron") {
@@ -3698,6 +3702,38 @@ async function runIngestCommand(
     });
 
     process.stdout.write("\nIngestion summary\n");
+    for (const sourceResult of result.results) {
+      process.stdout.write(
+        `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)\n`,
+      );
+    }
+
+    process.exitCode = result.results.some(
+      (sourceResult) => sourceResult.status === "error",
+    )
+      ? 1
+      : 0;
+  } catch (error) {
+    process.stderr.write(`${getErrorMessage(error)}\n`);
+    writePrintErrorDiagnostics(error);
+    process.exitCode = 1;
+  }
+}
+
+async function runBackfillCommand(
+  command: Extract<CliCommand, { kind: "backfill" }>,
+): Promise<void> {
+  try {
+    const result = await runOpenWikiBackfill(process.cwd(), {
+      onEvent: (event) => {
+        if (event.type === "text" && event.source !== "subgraph") {
+          process.stdout.write(event.text);
+        }
+      },
+      target: command.target,
+    });
+
+    process.stdout.write("\nBackfill summary\n");
     for (const sourceResult of result.results) {
       process.stdout.write(
         `- ${sourceResult.displayName}: ${sourceResult.status}; ${sourceResult.rawFiles.length} raw file(s)\n`,
