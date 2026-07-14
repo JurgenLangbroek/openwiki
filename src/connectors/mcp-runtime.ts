@@ -1,17 +1,15 @@
-import {
-  createRunId,
-  readConnectorConfig,
-  readConnectorState,
-  updateStateWithRun,
-  writeConnectorState,
-  writeRawJson,
-} from "./io.js";
+import { createRunId, readConnectorState, writeRawJson } from "./io.js";
 import {
   executeMcpTool,
   listMcpTools,
   type McpToolDescriptor,
 } from "./mcp-client.js";
 import { sanitizeMcpTransport } from "./mcp-shared.js";
+import {
+  recordMcpRun,
+  resolveMcpConnectorConfig,
+  sanitizeMcpValue,
+} from "./mcp-runtime-support.js";
 import {
   createGatewayUnavailableWarning,
   isMcpEndpointUnavailableError,
@@ -27,12 +25,7 @@ import {
   evaluateToolPolicy,
   type ToolWithPolicy,
 } from "./tool-policy.js";
-import type {
-  ConnectorId,
-  ConnectorIngestResult,
-  McpConnectorConfig,
-  McpEndpointId,
-} from "./types.js";
+import type { ConnectorId, McpEndpointId } from "./types.js";
 
 export type McpToolDiscoveryResult = {
   connectorId: ConnectorId;
@@ -86,7 +79,11 @@ export async function discoverMcpConnectorTools(
   const registry = options.registry ?? createConnectorRegistry();
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId, endpoint, registry);
+  const config = await resolveMcpConnectorConfig(
+    connectorId,
+    endpoint,
+    registry,
+  );
   let discovery: Awaited<ReturnType<typeof listMcpTools>>;
   try {
     discovery = await listMcpTools(config);
@@ -165,7 +162,11 @@ export async function callMcpConnectorTool(
   const registry = options.registry ?? createConnectorRegistry();
   const runId = createRunId();
   const state = await readConnectorState(connectorId);
-  const config = await readMcpConnectorConfig(connectorId, endpoint, registry);
+  const config = await resolveMcpConnectorConfig(
+    connectorId,
+    endpoint,
+    registry,
+  );
   const catalog = await readToolCatalog(connectorId, endpoint);
   let tool =
     catalog && isToolCatalogFresh(catalog)
@@ -204,7 +205,7 @@ export async function callMcpConnectorTool(
     runId,
     "mcp-tool-result.json",
     {
-      args: sanitizeValue(args),
+      args: sanitizeMcpValue(args),
       connectorId,
       endpoint,
       generatedAt: new Date().toISOString(),
@@ -231,77 +232,4 @@ export async function callMcpConnectorTool(
     runId,
     toolName: tool.name,
   };
-}
-
-async function readMcpConnectorConfig(
-  connectorId: ConnectorId,
-  endpoint: McpEndpointId,
-  registry: ConnectorRegistry,
-): Promise<McpConnectorConfig> {
-  const connector = registry[connectorId];
-  const availableEndpoints = connector.mcpEndpoints ?? ["default"];
-  if (!availableEndpoints.includes(endpoint)) {
-    throw new Error(
-      `Connector ${connectorId} does not expose MCP endpoint ${endpoint}; available endpoints: ${availableEndpoints.join(", ")}. Choose an available endpoint and retry.`,
-    );
-  }
-  const config = connector.resolveMcpConfig
-    ? await connector.resolveMcpConfig(endpoint)
-    : await readConnectorConfig<McpConnectorConfig>(connectorId, {
-        enabled: false,
-        readOnlyOperations: [],
-      });
-
-  if (!config.enabled) {
-    throw new Error(`${connectorId} MCP connector is not enabled.`);
-  }
-
-  if (!config.transport) {
-    throw new Error(`${connectorId} MCP connector config requires transport.`);
-  }
-
-  return config;
-}
-
-async function recordMcpRun(
-  connectorId: ConnectorId,
-  state: Awaited<ReturnType<typeof readConnectorState>>,
-  run: {
-    rawFiles: string[];
-    runId: string;
-    status: ConnectorIngestResult["status"];
-    warnings: string[];
-  },
-): Promise<void> {
-  await writeConnectorState(
-    connectorId,
-    updateStateWithRun(state, {
-      at: new Date().toISOString(),
-      rawFiles: run.rawFiles,
-      runId: run.runId,
-      status: run.status,
-      warnings: run.warnings,
-    }),
-  );
-}
-
-function sanitizeValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sanitizeValue);
-  }
-
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-        key,
-        isSecretLikeKey(key) ? "<redacted>" : sanitizeValue(entry),
-      ]),
-    );
-  }
-
-  return value;
-}
-
-function isSecretLikeKey(key: string): boolean {
-  return /(token|secret|password|authorization|api[-_]?key|cookie)/iu.test(key);
 }

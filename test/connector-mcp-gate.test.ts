@@ -106,6 +106,12 @@ describe("MCP connector eligibility", () => {
     expect(getConnectorIdEnum("openwiki_call_mcp_tool")).toEqual(
       expectedMcpIds,
     );
+    expect(
+      getConnectorIdEnum("openwiki_find_gateway_datasource_tools"),
+    ).toEqual(expectedMcpIds);
+    expect(getConnectorIdEnum("openwiki_gateway_datasource_read")).toEqual(
+      expectedMcpIds,
+    );
     expect(getConnectorIdEnum("openwiki_ingest_connector")).toEqual(
       expectedConnectorIds,
     );
@@ -140,5 +146,33 @@ describe("MCP connector eligibility", () => {
 
     expect(description).toMatch(/policy decision/iu);
     expect(description).toMatch(/denied tools cannot be called/iu);
+  });
+
+  test("exposes the policed gateway datasource discovery and read path", () => {
+    const discovery = getConnectorTool(
+      "openwiki_find_gateway_datasource_tools",
+    );
+    const read = getConnectorTool("openwiki_gateway_datasource_read");
+    const discoverySchema = discovery.schema as unknown as {
+      properties: { queries: { minItems?: number; type: string } };
+      required: string[];
+    };
+
+    expect(discovery.description).toMatch(
+      /Jira.*Confluence.*Gmail.*Calendar/iu,
+    );
+    expect(discovery.description).toMatch(/denied tools are never callable/iu);
+    expect(discoverySchema.properties.queries).toMatchObject({
+      minItems: 1,
+      type: "array",
+    });
+    expect(discoverySchema.required).toContain("queries");
+
+    expect(read.description).toMatch(/only path.*underlying datasources/iu);
+    expect(read.description).toMatch(/deny-by-default read-only/iu);
+    expect(read.description).toMatch(/recorded with provenance/iu);
+    expect(read.description).toMatch(/re-reading.*refused/iu);
+    expect(read.description).toContain('"serverId"');
+    expect(read.description).toContain('"toolName"');
   });
 });
