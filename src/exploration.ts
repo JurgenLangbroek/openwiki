@@ -4,7 +4,10 @@ import type {
   OpenWikiRunOptions,
   OpenWikiRunResult,
 } from "./agent/types.js";
-import { markUnsynthesizedRunsSynthesized } from "./connectors/io.js";
+import {
+  createRunId,
+  markUnsynthesizedRunsSynthesized,
+} from "./connectors/io.js";
 import {
   createConnectorRegistry,
   isConnectorId,
@@ -32,6 +35,7 @@ import {
   getConnectorConfigPath,
   getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
+import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
 
 export type SourceExplorationResult = {
   agentResult?: OpenWikiRunResult;
@@ -216,8 +220,12 @@ async function runSourceExploration({
   const displayName = getSourceDisplayName(connector, sourceConfig);
   emitText(emit, `\nStarting ${displayName} exploration.\n`);
 
+  let discovery: ConnectorIngestResult | undefined;
+  const fallbackRunId = createRunId();
+  const startedAt = new Date().toISOString();
+  const onLedgerError = (message: string) => emitText(emit, `${message}\n`);
   try {
-    const discovery =
+    discovery =
       connector.posture === "hybrid"
         ? await connector.discoverLiveTools?.()
         : undefined;
@@ -227,6 +235,16 @@ async function runSourceExploration({
       );
     }
     const rawFiles = discovery?.rawFiles ?? [];
+    await writeRunLedgerBestEffort({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      fallbackMessage: `No connector discovery result was recorded for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "explore",
+      onError: onLedgerError,
+      result: discovery,
+      startedAt,
+    });
     if (discovery?.status === "error") {
       emitText(
         emit,
@@ -285,10 +303,20 @@ async function runSourceExploration({
       status: "agent-updated",
     };
   } catch (error) {
-    emitText(
-      emit,
-      `${connector.displayName} exploration failed: ${getErrorMessage(error)}\n`,
-    );
+    const message = getErrorMessage(error);
+    await writeRunLedgerBestEffort({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      errorMessage: message,
+      fallbackMessage: `No connector discovery result was recorded for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "explore",
+      onError: onLedgerError,
+      result: discovery,
+      startedAt,
+      status: "error",
+    });
+    emitText(emit, `${connector.displayName} exploration failed: ${message}\n`);
     return {
       connectorId: connector.id,
       displayName,

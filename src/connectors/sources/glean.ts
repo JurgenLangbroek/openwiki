@@ -24,6 +24,11 @@ import {
   recordSlice,
   type SliceWalkConfig,
 } from "../slice-walker.js";
+import {
+  createNoWatermarkEvent,
+  type RunLedgerEvent,
+  type RunLedgerSlice,
+} from "../run-ledger.js";
 import type {
   ConnectorDefinition,
   ConnectorIngestOptions,
@@ -145,6 +150,13 @@ export function createGleanConnector(overrides?: {
         warnings,
       } = preparation;
       const state = await readConnectorState("glean");
+      const ledgerEvents: RunLedgerEvent[] = [];
+      appendFinalLedgerEvents(
+        ledgerEvents,
+        state.backfill,
+        fetchedAt,
+        warnings,
+      );
       await writeConnectorState(
         "glean",
         updateStateWithRun(state, {
@@ -158,6 +170,7 @@ export function createGleanConnector(overrides?: {
 
       return {
         connectorId: "glean",
+        ledgerEvents,
         liveTools,
         message: `Probed ${toolCount} MCP tool(s) at ${target.backendUrl}.`,
         rawFiles,
@@ -189,6 +202,7 @@ export function createGleanConnector(overrides?: {
       const sinceDate = calculateSinceDate(fetchedAt, windowHours);
       let state = await readConnectorState("glean");
 
+      const ledgerEvents: RunLedgerEvent[] = [];
       const summaries: string[] = [];
       const pulledStreams: PulledEvidenceStream[] = [];
       let succeededStreams = 0;
@@ -272,12 +286,28 @@ export function createGleanConnector(overrides?: {
             items: pulled.artifact.items,
             stream: streamPull.stream,
           });
+          ledgerEvents.push({
+            counts: {
+              deduplicated: pulled.artifact.counts.deduplicated,
+              fetched: pulled.artifact.counts.fetched,
+              new: pulled.artifact.counts.new,
+            },
+            stream: streamPull.stream,
+            type: "pull",
+          });
           succeededStreams += 1;
           summaries.push(
             `${streamPull.stream} ${pulled.artifact.counts.new} new`,
           );
         } catch (error) {
-          warnings.push(createStreamWarning(streamPull.stream, error));
+          const warning = createStreamWarning(streamPull.stream, error);
+          warnings.push(warning);
+          ledgerEvents.push({
+            counts: { deduplicated: 0, fetched: 0, new: 0 },
+            error: warning,
+            stream: streamPull.stream,
+            type: "pull",
+          });
         }
       }
 
@@ -303,15 +333,20 @@ export function createGleanConnector(overrides?: {
             ),
           );
           state = withSeenIds(state, "expanded", pulled.seenIds);
+          appendExpansionLedgerEvents(ledgerEvents, pulled.artifact);
           summaries.push(`expanded ${pulled.artifact.counts.expanded} new`);
         } catch (error) {
-          warnings.push(
-            `Glean expanded pull failed: ${readErrorReason(error)}`,
-          );
+          appendExpansionPullFailure(ledgerEvents, warnings, error);
         }
       }
 
       const status = succeededStreams > 0 ? "success" : "error";
+      appendFinalLedgerEvents(
+        ledgerEvents,
+        state.backfill,
+        fetchedAt,
+        warnings,
+      );
       await writeConnectorState(
         "glean",
         updateStateWithRun(state, {
@@ -325,6 +360,7 @@ export function createGleanConnector(overrides?: {
 
       return {
         connectorId: "glean",
+        ledgerEvents,
         ...(status === "success" ? { liveTools } : {}),
         message:
           status === "success"
@@ -371,6 +407,7 @@ async function backfillGlean(
   });
   const slicesBeforeRun = walkState.slicesWalked;
   let expandedItemCount = 0;
+  const ledgerEvents: RunLedgerEvent[] = [];
   let pulledItemCount = 0;
 
   while (true) {
@@ -380,6 +417,7 @@ async function backfillGlean(
     }
 
     const sliceNumber = walkState.slicesWalked - slicesBeforeRun + 1;
+    const slice: RunLedgerSlice = { number: sliceNumber, ...bounds };
     const sliceFetchedAt = new Date().toISOString();
     const [myWorkFetch, messagesFetch] = await Promise.allSettled([
       transport.fetchMyWork({
@@ -405,6 +443,10 @@ async function backfillGlean(
       stream: "messages",
       warnings,
     });
+    ledgerEvents.push(
+      createBackfillPullLedgerEvent("my-work", myWork.artifact, slice),
+      createBackfillPullLedgerEvent("messages", messages.artifact, slice),
+    );
     appendFullPageWarning({
       bounds,
       fetchedCount: myWork.artifact.counts.fetched,
@@ -419,6 +461,7 @@ async function backfillGlean(
     });
 
     if (!myWork.succeeded || !messages.succeeded) {
+      appendFinalLedgerEvents(ledgerEvents, walkState, fetchedAt, warnings);
       await writeConnectorState(
         "glean",
         updateStateWithRun(
@@ -433,6 +476,7 @@ async function backfillGlean(
         ),
       );
       return createGleanBackfillResult({
+        ledgerEvents,
         message: `Glean Backfill stream fetch failed in slice ${sliceNumber}; history remains provably covered back to ${walkState.watermark.slice(0, 10)}.`,
         rawFiles,
         runId,
@@ -467,8 +511,9 @@ async function backfillGlean(
         expanded = pulled.artifact;
         expandedItemCount += pulled.artifact.counts.expanded;
         state = withSeenIds(state, "expanded", pulled.seenIds);
+        appendExpansionLedgerEvents(ledgerEvents, pulled.artifact, slice);
       } catch (error) {
-        warnings.push(`Glean expanded pull failed: ${readErrorReason(error)}`);
+        appendExpansionPullFailure(ledgerEvents, warnings, error, slice);
       }
     }
     rawFiles.push(
@@ -503,8 +548,10 @@ async function backfillGlean(
     },
   );
   await writeConnectorState("glean", nextState);
+  appendFinalLedgerEvents(ledgerEvents, walkState, fetchedAt, warnings);
 
   return createGleanBackfillResult({
+    ledgerEvents,
     liveTools,
     message: `Backfill walked ${slicesWalked} slice(s), pulled ${pulledItemCount} item(s), expanded ${expandedItemCount} item(s); history reaches back to ${walkState.watermark.slice(0, 10)}.`,
     rawFiles,
@@ -515,6 +562,7 @@ async function backfillGlean(
 }
 
 function createGleanBackfillResult({
+  ledgerEvents,
   liveTools,
   message,
   rawFiles,
@@ -522,6 +570,7 @@ function createGleanBackfillResult({
   status,
   warnings,
 }: {
+  ledgerEvents: RunLedgerEvent[];
   liveTools?: ConnectorIngestResult["liveTools"];
   message: string;
   rawFiles: string[];
@@ -531,6 +580,7 @@ function createGleanBackfillResult({
 }): ConnectorIngestResult {
   return {
     connectorId: "glean",
+    ledgerEvents,
     ...(liveTools ? { liveTools } : {}),
     message,
     rawFiles,
@@ -539,6 +589,107 @@ function createGleanBackfillResult({
     status,
     warnings,
   };
+}
+
+function createBackfillPullLedgerEvent(
+  stream: Extract<DocumentStreamName, "messages" | "my-work">,
+  artifact: BackfillStreamArtifact,
+  slice: RunLedgerSlice,
+): Extract<RunLedgerEvent, { type: "pull" }> {
+  return {
+    counts: {
+      deduplicated: artifact.counts.deduplicated,
+      fetched: artifact.counts.fetched,
+      new: artifact.counts.new,
+    },
+    ...(artifact.error ? { error: artifact.error } : {}),
+    slice,
+    stream,
+    type: "pull",
+  };
+}
+
+function appendExpansionLedgerEvents(
+  ledgerEvents: RunLedgerEvent[],
+  artifact: ExpansionPullResult["artifact"],
+  slice?: RunLedgerSlice,
+): void {
+  ledgerEvents.push(
+    ...artifact.items.map(
+      (item): Extract<RunLedgerEvent, { type: "expansion" }> => ({
+        id: readString(item, "id") ?? "unknown",
+        outcome: "ok",
+        ...(slice ? { slice } : {}),
+        sourceStream: readString(item, "sourceStream") ?? "expanded",
+        ...(readString(item, "title")
+          ? { title: readString(item, "title") }
+          : {}),
+        type: "expansion",
+        ...(readString(item, "url") ? { url: readString(item, "url") } : {}),
+      }),
+    ),
+    ...artifact.failures.map((failure) => ({
+      id: failure.id,
+      outcome: "failed" as const,
+      reason: failure.reason,
+      ...(slice ? { slice } : {}),
+      sourceStream: failure.sourceStream,
+      ...(failure.title ? { title: failure.title } : {}),
+      type: "expansion" as const,
+      ...(failure.url ? { url: failure.url } : {}),
+    })),
+  );
+
+  if (artifact.counts.deduplicated > 0) {
+    ledgerEvents.push({
+      count: artifact.counts.deduplicated,
+      id: "previously-expanded-candidates",
+      outcome: "skipped",
+      reason: "already expanded in a prior run",
+      ...(slice ? { slice } : {}),
+      sourceStream: "expanded",
+      type: "expansion",
+    });
+  }
+}
+
+function appendExpansionPullFailure(
+  ledgerEvents: RunLedgerEvent[],
+  warnings: string[],
+  error: unknown,
+  slice?: RunLedgerSlice,
+): void {
+  const reason = readErrorReason(error);
+  warnings.push(`Glean expanded pull failed: ${reason}`);
+  ledgerEvents.push({
+    id: "(entire expansion pull)",
+    outcome: "failed",
+    reason,
+    ...(slice ? { slice } : {}),
+    sourceStream: "expanded",
+    type: "expansion",
+  });
+}
+
+function appendFinalLedgerEvents(
+  ledgerEvents: RunLedgerEvent[],
+  backfill: ConnectorState["backfill"],
+  fetchedAt: string,
+  warnings: string[],
+): void {
+  ledgerEvents.push(
+    backfill
+      ? {
+          status: backfill.status,
+          type: "watermark",
+          watermark: backfill.watermark,
+        }
+      : createNoWatermarkEvent(fetchedAt),
+    ...warnings.map((message) => ({
+      message,
+      type: "warning" as const,
+    })),
+  );
 }
 
 type GleanLiveToolsPreparation =
@@ -1859,6 +2010,7 @@ function createEmptyResult(
 ): ConnectorIngestResult {
   return {
     connectorId: "glean",
+    ledgerEvents: [createNoWatermarkEvent(new Date().toISOString())],
     message,
     rawFiles: [],
     runId,

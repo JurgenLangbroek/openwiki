@@ -19,6 +19,9 @@ describe("source synthesis policy", () => {
     expect(policy).toMatch(/Glean permalink.*markdown link.*item.*url/isu);
     expect(policy).toMatch(/\/sources\/glean\.md.*compact evidence index/isu);
     expect(policy).toMatch(/coverage counts and pointers/isu);
+    expect(policy).toContain(
+      "Never edit /sources/glean-run-ledger.md files: they are machine-generated Run Ledger pages.",
+    );
     expect(policy).toMatch(/real uncertainties.*Open Questions/isu);
   });
 

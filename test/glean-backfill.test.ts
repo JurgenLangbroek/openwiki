@@ -149,6 +149,37 @@ describe("Glean Backfill", () => {
       version: 1,
       watermark: "2026-06-04T12:00:00.000Z",
     });
+    expect(
+      result?.ledgerEvents
+        ?.filter((event) => event.type === "pull")
+        .slice(0, 2),
+    ).toEqual([
+      {
+        counts: { deduplicated: 0, fetched: 1, new: 1 },
+        slice: {
+          number: 1,
+          sinceDate: "2026-07-04",
+          untilDate: "2026-07-14",
+        },
+        stream: "my-work",
+        type: "pull",
+      },
+      {
+        counts: { deduplicated: 0, fetched: 0, new: 0 },
+        slice: {
+          number: 1,
+          sinceDate: "2026-07-04",
+          untilDate: "2026-07-14",
+        },
+        stream: "messages",
+        type: "pull",
+      },
+    ]);
+    expect(result?.ledgerEvents).toContainEqual({
+      status: "dry",
+      type: "watermark",
+      watermark: "2026-06-04T12:00:00.000Z",
+    });
   });
 
   test("expands every item across multiple Backfill slices without a cap", async () => {
@@ -249,6 +280,62 @@ describe("Glean Backfill", () => {
       status: "dry",
       watermark: "2026-06-14T12:00:00.000Z",
     });
+    expect(
+      result?.ledgerEvents?.filter((event) => event.type === "expansion"),
+    ).toEqual([
+      {
+        id: "cannot-expand",
+        outcome: "failed",
+        reason: "index read unavailable",
+        slice: {
+          number: 1,
+          sinceDate: "2026-07-04",
+          untilDate: "2026-07-14",
+        },
+        sourceStream: "my-work",
+        title: "Document cannot-expand",
+        type: "expansion",
+        url: "https://app.glean.com/go/cannot-expand",
+      },
+    ]);
+  });
+
+  test("records a whole Content Expansion pull failure with its slice", async () => {
+    const calls: SliceFetchCall[] = [];
+    const transcriptDatasources = new Proxy<string[]>([], {
+      get(target, property, receiver) {
+        if (property === "filter") {
+          throw new Error("expansion pipeline unavailable");
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const result = await createGleanConnector({
+      transport: createBackfillTransport(calls, ({ stream, untilDate }) =>
+        stream === "my-work" && untilDate === "2026-07-14"
+          ? gleanSearchResponse("whole-pull-failure")
+          : { results: [] },
+      ),
+    }).backfill?.({
+      connectorConfig: { expansion: { transcriptDatasources } },
+    });
+
+    expect(
+      result?.ledgerEvents?.filter((event) => event.type === "expansion"),
+    ).toEqual([
+      {
+        id: "(entire expansion pull)",
+        outcome: "failed",
+        reason: "expansion pipeline unavailable",
+        slice: {
+          number: 1,
+          sinceDate: "2026-07-04",
+          untilDate: "2026-07-14",
+        },
+        sourceStream: "expanded",
+        type: "expansion",
+      },
+    ]);
   });
 
   test("does not re-expand a persisted id when a later Backfill finds it in another stream", async () => {
@@ -329,6 +416,11 @@ describe("Glean Backfill", () => {
       expect.stringMatching(/my-work.*unavailable/iu),
       expect.stringMatching(/messages.*unavailable/iu),
     ]);
+    expect(failedResult?.ledgerEvents).toContainEqual({
+      status: "walking",
+      type: "watermark",
+      watermark: "2026-06-24T12:00:00.000Z",
+    });
     expect((await readGleanState()).backfill).toMatchObject({
       slicesWalked: 2,
       status: "walking",

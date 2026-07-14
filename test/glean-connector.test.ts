@@ -26,6 +26,7 @@ import {
   createConnectorRegistry,
   isConnectorId,
 } from "../src/connectors/registry.ts";
+import { writeConnectorState } from "../src/connectors/io.ts";
 
 const GLEAN_ENV_KEYS = [
   "OPENWIKI_GLEAN_ACCESS_TOKEN",
@@ -446,6 +447,53 @@ describe("Glean connector", () => {
       "calendar.json",
       "expanded.json",
     ]);
+    expect(result.ledgerEvents?.slice(0, 7)).toEqual([
+      {
+        counts: { deduplicated: 0, fetched: 1, new: 1 },
+        stream: "feed",
+        type: "pull",
+      },
+      {
+        counts: { deduplicated: 0, fetched: 1, new: 1 },
+        stream: "my-work",
+        type: "pull",
+      },
+      {
+        counts: { deduplicated: 0, fetched: 1, new: 1 },
+        stream: "messages",
+        type: "pull",
+      },
+      {
+        counts: { deduplicated: 0, fetched: 2, new: 2 },
+        stream: "calendar",
+        type: "pull",
+      },
+      {
+        id: "owned-document-1",
+        outcome: "ok",
+        sourceStream: "my-work",
+        title: "Atlas launch plan",
+        type: "expansion",
+        url: "https://app.glean.com/go/owned-document-1",
+      },
+      {
+        id: "message-thread-1",
+        outcome: "ok",
+        sourceStream: "messages",
+        title: "Atlas launch thread",
+        type: "expansion",
+        url: "https://app.glean.com/go/message-thread-1",
+      },
+      {
+        status: "none",
+        type: "watermark",
+        watermark: "2026-07-13T12:00:00.000Z",
+      },
+    ]);
+    expect(result.ledgerEvents?.[7]).toEqual({
+      message: result.warnings[0],
+      type: "warning",
+    });
 
     const probeText = await readFile(result.rawFiles[0], "utf8");
     const probe = JSON.parse(probeText) as Record<string, unknown>;
@@ -1846,6 +1894,14 @@ describe("Glean connector", () => {
       },
       items: [],
     });
+    expect(second.ledgerEvents).toContainEqual({
+      count: 1,
+      id: "previously-expanded-candidates",
+      outcome: "skipped",
+      reason: "already expanded in a prior run",
+      sourceStream: "expanded",
+      type: "expansion",
+    });
     expect(state.seenIds.expanded).toEqual(["cross-run-1"]);
   });
 
@@ -1934,6 +1990,26 @@ describe("Glean connector", () => {
       ],
       items: [{ id: "works-1" }],
     });
+    expect(
+      result.ledgerEvents?.filter((event) => event.type === "expansion"),
+    ).toEqual([
+      {
+        id: "works-1",
+        outcome: "ok",
+        sourceStream: "messages",
+        type: "expansion",
+        url: "https://app.glean.com/go/works-1",
+      },
+      {
+        id: "fails-1",
+        outcome: "failed",
+        reason:
+          "Glean /rest/api/v1/getdocuments request failed: 403 Forbidden (insufficient_scope: insufficient scopes)",
+        sourceStream: "my-work",
+        type: "expansion",
+        url: "https://app.glean.com/go/fails-1",
+      },
+    ]);
     expect(state.seenIds.expanded).toEqual(["works-1"]);
     expect(state.seenIds.expanded).not.toContain("fails-1");
   });
@@ -2030,6 +2106,27 @@ describe("Glean connector", () => {
       "Glean my-work pull failed: 401 Unauthorized",
       "Glean messages pull failed: 401 Unauthorized",
       "Glean calendar pull failed: 401 Unauthorized",
+    ]);
+    expect(
+      result.ledgerEvents?.filter((event) => event.type === "pull"),
+    ).toEqual([
+      expect.objectContaining({
+        counts: { deduplicated: 0, fetched: 0, new: 0 },
+        error: "Glean feed pull failed: 401 Unauthorized",
+        stream: "feed",
+      }),
+      expect.objectContaining({
+        error: "Glean my-work pull failed: 401 Unauthorized",
+        stream: "my-work",
+      }),
+      expect.objectContaining({
+        error: "Glean messages pull failed: 401 Unauthorized",
+        stream: "messages",
+      }),
+      expect.objectContaining({
+        error: "Glean calendar pull failed: 401 Unauthorized",
+        stream: "calendar",
+      }),
     ]);
   });
 
@@ -2176,6 +2273,32 @@ describe("Glean live-tool discovery", () => {
     expect(result?.rawFiles.map((file) => path.basename(file))).toEqual([
       "probe.json",
     ]);
+  });
+
+  test("reports the persisted Backfill watermark", async () => {
+    await writeGleanConfig({ enabled: true, instance: "acme" });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    await writeConnectorState("glean", {
+      backfill: {
+        consecutiveEmptySlices: 2,
+        slicesWalked: 4,
+        startedAt: "2026-06-01T12:00:00.000Z",
+        status: "dry",
+        version: 1,
+        watermark: "2026-04-01T12:00:00.000Z",
+      },
+      version: 1,
+    });
+
+    const result = await createGleanConnector({
+      transport: createEmptyGleanTransport(),
+    }).discoverLiveTools?.();
+
+    expect(result?.ledgerEvents).toContainEqual({
+      status: "dry",
+      type: "watermark",
+      watermark: "2026-04-01T12:00:00.000Z",
+    });
   });
 
   test("uses the same disabled and missing-credential checks as ingestion", async () => {

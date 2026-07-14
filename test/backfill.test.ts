@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   gleanBackfill: vi.fn(),
@@ -7,10 +10,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../src/env.ts", () => ({
   loadOpenWikiEnv: vi.fn(),
-}));
-
-vi.mock("../src/openwiki-home.ts", () => ({
-  ensureOpenWikiHome: vi.fn(),
 }));
 
 vi.mock("../src/onboarding.ts", () => ({
@@ -44,8 +43,13 @@ vi.mock("../src/connectors/registry.ts", () => ({
 
 import { runOpenWikiBackfill } from "../src/backfill.ts";
 
-beforeEach(() => {
+const originalOpenWikiHome = process.env.OPENWIKI_HOME;
+let openWikiHome: string;
+
+beforeEach(async () => {
   vi.clearAllMocks();
+  openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-backfill-run-"));
+  process.env.OPENWIKI_HOME = openWikiHome;
   mocks.readConfig.mockResolvedValue({
     sourceInstances: [
       {
@@ -74,6 +78,15 @@ beforeEach(() => {
     status: "success",
     warnings: [],
   });
+});
+
+afterEach(async () => {
+  if (originalOpenWikiHome === undefined) {
+    delete process.env.OPENWIKI_HOME;
+  } else {
+    process.env.OPENWIKI_HOME = originalOpenWikiHome;
+  }
+  await rm(openWikiHome, { force: true, recursive: true });
 });
 
 describe("runOpenWikiBackfill", () => {
@@ -109,6 +122,12 @@ describe("runOpenWikiBackfill", () => {
     });
     expect(text.join(" ")).toMatch(/Starting Work Glean Backfill/iu);
     expect(text.join(" ")).toMatch(/Slack does not support backfill/iu);
+    await expect(
+      readFile(
+        path.join(openWikiHome, "wiki", "sources", "glean-run-ledger.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("## Run run-1 — backfill — success");
   });
 
   test("rejects a non-all target with no configured match", async () => {
