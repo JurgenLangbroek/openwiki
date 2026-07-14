@@ -35,6 +35,12 @@ export type DownstreamToolPolicyResolution = {
   descriptor?: DownstreamToolDescriptor;
 };
 
+export type GatewaySkillCatalog = {
+  [key: string]: unknown;
+  skill_order: string[];
+  skills: Record<string, Record<string, unknown>>;
+};
+
 const DENIAL_RULE_SEVERITY: Partial<Record<DownstreamToolPolicyRule, number>> =
   {
     "deny-by-default": 1,
@@ -49,8 +55,20 @@ export function resolveDownstreamToolPolicy(input: {
   catalog: unknown;
   ref: DownstreamToolRef;
 }): DownstreamToolPolicyResolution {
-  const descriptors = collectToolDescriptors(input.catalog).filter(
-    (candidate) => matchesToolRef(candidate, input.ref),
+  return resolveDownstreamToolPolicyFromDescriptors({
+    allowedTools: input.allowedTools,
+    descriptors: collectToolDescriptors(input.catalog),
+    ref: input.ref,
+  });
+}
+
+export function resolveDownstreamToolPolicyFromDescriptors(input: {
+  allowedTools?: string[];
+  descriptors: readonly DownstreamToolDescriptor[];
+  ref: DownstreamToolRef;
+}): DownstreamToolPolicyResolution {
+  const descriptors = input.descriptors.filter((candidate) =>
+    matchesToolRef(candidate, input.ref),
   );
 
   if (descriptors.length === 0) {
@@ -124,15 +142,32 @@ function matchesToolRef(
   );
 }
 
-function collectToolDescriptors(catalog: unknown): DownstreamToolDescriptor[] {
-  const skills = readRecord(readRecord(catalog)?.skills);
-  if (skills === undefined) {
+export function collectToolDescriptors(
+  catalog: unknown,
+  options: { preserveUnknownFields: true },
+): (DownstreamToolDescriptor & Record<string, unknown>)[];
+export function collectToolDescriptors(
+  catalog: unknown,
+  options?: { preserveUnknownFields?: false },
+): DownstreamToolDescriptor[];
+export function collectToolDescriptors(
+  catalog: unknown,
+  options: { preserveUnknownFields?: boolean } = {},
+): DownstreamToolDescriptor[] {
+  const parsedCatalog = readGatewaySkillCatalog(catalog);
+  if (parsedCatalog === undefined) {
     return [];
   }
 
   const descriptors: DownstreamToolDescriptor[] = [];
-  for (const skill of Object.values(skills)) {
-    const entries = readRecord(skill);
+  const orderedSkillNames = [
+    ...new Set([
+      ...parsedCatalog.skill_order,
+      ...Object.keys(parsedCatalog.skills),
+    ]),
+  ];
+  for (const skillName of orderedSkillNames) {
+    const entries = parsedCatalog.skills[skillName];
     if (entries === undefined) {
       continue;
     }
@@ -142,7 +177,10 @@ function collectToolDescriptors(catalog: unknown): DownstreamToolDescriptor[] {
         continue;
       }
 
-      const descriptor = parseToolDescriptor(entryValue);
+      const descriptor = parseToolDescriptor(
+        entryValue,
+        options.preserveUnknownFields ?? false,
+      );
       if (descriptor !== undefined) {
         descriptors.push(descriptor);
       }
@@ -152,8 +190,25 @@ function collectToolDescriptors(catalog: unknown): DownstreamToolDescriptor[] {
   return descriptors;
 }
 
+export function readGatewaySkillCatalog(
+  value: unknown,
+): GatewaySkillCatalog | undefined {
+  const catalog = readRecord(value);
+  const skills = readRecordOfRecords(catalog?.skills);
+  if (catalog === undefined || skills === undefined) {
+    return undefined;
+  }
+
+  return {
+    ...catalog,
+    skill_order: readStringArray(catalog.skill_order),
+    skills,
+  };
+}
+
 function parseToolDescriptor(
   value: unknown,
+  preserveUnknownFields: boolean,
 ): DownstreamToolDescriptor | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -168,11 +223,14 @@ function parseToolDescriptor(
 
     const annotations = readRecord(parsed.annotations);
     const description = readString(parsed.description);
-    const instances = readToolInstances(parsed.instances);
+    const instances = readToolInstances(
+      parsed.instances,
+      preserveUnknownFields,
+    );
     const requiresApproval = readBoolean(parsed.requires_approval);
     const serverId = readString(parsed.server_id);
 
-    return {
+    const descriptor: DownstreamToolDescriptor = {
       ...(annotations === undefined ? {} : { annotations }),
       ...(description === undefined ? {} : { description }),
       ...(instances === undefined ? {} : { instances }),
@@ -182,6 +240,18 @@ function parseToolDescriptor(
         : { requires_approval: requiresApproval }),
       ...(serverId === undefined ? {} : { server_id: serverId }),
     };
+
+    if (!preserveUnknownFields) {
+      return descriptor;
+    }
+
+    const preserved = { ...parsed, ...descriptor };
+    deleteInvalidKnownField(preserved, "annotations", annotations);
+    deleteInvalidKnownField(preserved, "description", description);
+    deleteInvalidKnownField(preserved, "instances", instances);
+    deleteInvalidKnownField(preserved, "requires_approval", requiresApproval);
+    deleteInvalidKnownField(preserved, "server_id", serverId);
+    return preserved;
   } catch {
     return undefined;
   }
@@ -193,14 +263,25 @@ function readBoolean(value: unknown): boolean | undefined {
 
 function readToolInstances(
   value: unknown,
+  preserveUnknownFields: boolean,
 ): DownstreamToolInstance[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
 
-  return value.map((instance) => ({
-    server_id: readString(readRecord(instance)?.server_id),
-  }));
+  return value.map((instance) => {
+    const parsed = readRecord(instance);
+    const serverId = readString(parsed?.server_id);
+    if (!preserveUnknownFields || parsed === undefined) {
+      return { server_id: serverId };
+    }
+
+    const preserved = { ...parsed, server_id: serverId };
+    if (serverId === undefined) {
+      delete preserved.server_id;
+    }
+    return preserved;
+  });
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {
@@ -209,6 +290,35 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function readRecordOfRecords(
+  value: unknown,
+): Record<string, Record<string, unknown>> | undefined {
+  const record = readRecord(value);
+  if (record === undefined) {
+    return undefined;
+  }
+
+  return Object.values(record).every((entry) => readRecord(entry) !== undefined)
+    ? (record as Record<string, Record<string, unknown>>)
+    : undefined;
+}
+
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function deleteInvalidKnownField(
+  descriptor: Record<string, unknown>,
+  key: string,
+  normalizedValue: unknown,
+): void {
+  if (normalizedValue === undefined) {
+    delete descriptor[key];
+  }
 }

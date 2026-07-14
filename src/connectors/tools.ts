@@ -24,6 +24,11 @@ import {
   isMcpConnectorId,
 } from "./mcp-runtime.js";
 import {
+  callGatewayDatasourceRead,
+  discoverGatewayDatasourceTools,
+} from "./gateway-read.js";
+import { createGatewayTripwireState } from "./gateway-tripwires.js";
+import {
   MCP_ENDPOINT_IDS,
   type ConnectorId,
   type ConnectorIngestOptions,
@@ -34,6 +39,7 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
   const connectorIds = [...CONNECTOR_IDS].sort();
   const mcpConnectorIds = getMcpConnectorIds();
   const mcpConnectorId = mcpConnectorIds[0];
+  const gatewayTripwires = createGatewayTripwireState();
 
   return [
     new DynamicStructuredTool({
@@ -108,6 +114,68 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
             getRecordInput(input, "args") ?? {},
             getMcpEndpointInput(input),
           ),
+        ),
+    }),
+    new DynamicStructuredTool({
+      name: "openwiki_find_gateway_datasource_tools",
+      description: `Discover read-policed downstream datasource tools for Jira, Confluence, Gmail, and Calendar behind an MCP gateway, cache the merged find_skills catalog, and record the discovery. Every downstream tool includes its deny-by-default policy decision; denied tools are never callable. Input: ${JSON.stringify({ connectorId: mcpConnectorId, queries: ["Jira issue reads for OW-35"] })}.`,
+      schema: {
+        type: "object",
+        properties: {
+          connectorId: {
+            type: "string",
+            enum: mcpConnectorIds,
+          },
+          queries: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+        },
+        required: ["connectorId", "queries"],
+        additionalProperties: false,
+      } as const,
+      func: async (input) =>
+        stringifyToolResult(
+          await findGatewayDatasourceTools(
+            getConnectorId(input, "connectorId"),
+            getRequiredStringArrayInput(input, "queries"),
+          ),
+        ),
+    }),
+    new DynamicStructuredTool({
+      name: "openwiki_gateway_datasource_read",
+      description: `This is the ONLY path to underlying datasources behind an MCP gateway. Every call is policed deny-by-default read-only according to the exact downstream tool, recorded with provenance, and write-shaped or unknown tools are refused before network access. Re-reading the same document within one agent run is refused because it is not new information. Input: ${JSON.stringify({ args: { issueKey: "OW-35" }, connectorId: mcpConnectorId, serverId: "jira-primary", toolName: "JIRA_GET_ISSUE" })}.`,
+      schema: {
+        type: "object",
+        properties: {
+          args: {
+            type: "object",
+            additionalProperties: true,
+          },
+          connectorId: {
+            type: "string",
+            enum: mcpConnectorIds,
+          },
+          serverId: {
+            type: "string",
+          },
+          toolName: {
+            type: "string",
+          },
+        },
+        required: ["connectorId", "serverId", "toolName"],
+        additionalProperties: false,
+      } as const,
+      func: async (input) =>
+        stringifyToolResult(
+          await readGatewayDatasource({
+            args: getRecordInput(input, "args") ?? {},
+            connectorId: getConnectorId(input, "connectorId"),
+            serverId: getStringInput(input, "serverId"),
+            toolName: getStringInput(input, "toolName"),
+            tripwires: gatewayTripwires,
+          }),
         ),
     }),
     new DynamicStructuredTool({
@@ -271,6 +339,27 @@ async function callMcpToolForConnector(
   }
 
   return await callMcpConnectorTool(connectorId, toolName, args, { endpoint });
+}
+
+async function findGatewayDatasourceTools(
+  connectorId: ConnectorId,
+  queries: string[],
+) {
+  if (!isMcpConnectorId(connectorId)) {
+    throw new Error(`Connector ${connectorId} is not MCP-backed.`);
+  }
+
+  return await discoverGatewayDatasourceTools(connectorId, queries);
+}
+
+async function readGatewayDatasource(
+  input: Parameters<typeof callGatewayDatasourceRead>[0],
+) {
+  if (!isMcpConnectorId(input.connectorId)) {
+    throw new Error(`Connector ${input.connectorId} is not MCP-backed.`);
+  }
+
+  return await callGatewayDatasourceRead(input);
 }
 
 function getMcpEndpointInput(input: unknown): McpEndpointId {
@@ -471,6 +560,19 @@ function getStringArrayInput(
   return input[key].filter(
     (value): value is string => typeof value === "string",
   );
+}
+
+function getRequiredStringArrayInput(input: unknown, key: string): string[] {
+  if (
+    !isRecord(input) ||
+    !Array.isArray(input[key]) ||
+    input[key].length === 0 ||
+    !input[key].every((value) => typeof value === "string")
+  ) {
+    throw new Error(`Expected non-empty string array input: ${key}`);
+  }
+
+  return input[key];
 }
 
 function stringifyToolResult(value: unknown): string {
