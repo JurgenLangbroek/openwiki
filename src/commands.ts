@@ -25,6 +25,11 @@ export type HelpContent = {
 
 export type CliCommand =
   | {
+      kind: "backfill";
+      exitCode: 0;
+      target: IngestionTarget;
+    }
+  | {
       kind: "auth";
       action: "configure" | "list" | "oauth" | "tools";
       exitCode: 0;
@@ -204,6 +209,32 @@ export function parseCommand(argv: string[]): CliCommand {
       exitCode: 0,
       port,
       url,
+    };
+  }
+
+  if (argv[0] === "backfill") {
+    const unknownOption = argv.slice(1).find((arg) => arg.startsWith("-"));
+    if (unknownOption) {
+      return {
+        kind: "error",
+        exitCode: 1,
+        message: `Unknown option for backfill: ${unknownOption}`,
+      };
+    }
+
+    const target = parseIngestionTarget(argv[1] ?? "all");
+    if (!target || argv.length > 2) {
+      return {
+        kind: "error",
+        exitCode: 1,
+        message: "Usage: openwiki backfill <source|source-instance|all>",
+      };
+    }
+
+    return {
+      kind: "backfill",
+      exitCode: 0,
+      target,
     };
   }
 
@@ -591,6 +622,7 @@ export const helpContent: HelpContent = {
     "openwiki auth <provider>",
     "openwiki auth configure <provider> [--force]",
     "openwiki auth tools <provider>",
+    "openwiki backfill <source|source-instance|all>",
     "openwiki explore <source|source-instance|all>",
     "openwiki ingest <source|source-instance|all>",
     "openwiki cron list",
@@ -627,6 +659,11 @@ export const helpContent: HelpContent = {
     {
       label: "openwiki auth tools <provider>",
       description: "List available MCP tools for a configured auth provider.",
+    },
+    {
+      label: "openwiki backfill <source|source-instance|all>",
+      description:
+        "Walk a connector's history back until it runs dry, in date slices, and record the watermark.",
     },
     {
       label: "openwiki explore <source|source-instance|all>",
@@ -705,6 +742,7 @@ export const helpContent: HelpContent = {
     "openwiki --modelId gpt-5.5",
     'openwiki --update --modelId gpt-5.5 "Please document the API routes first"',
     'openwiki --update "Refresh the wiki from configured connectors"',
+    "openwiki backfill glean",
     "openwiki ingest all",
     "openwiki ingest web-search",
     "openwiki ingest web-search-2",

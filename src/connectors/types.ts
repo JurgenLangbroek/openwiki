@@ -1,4 +1,5 @@
 import type { PolicyEvaluableTool, ToolWithPolicy } from "./tool-policy.js";
+import type { SliceWalkState } from "./slice-walker.js";
 
 export type ConnectorId =
   | "git-repo"
@@ -50,6 +51,9 @@ export type ConnectorIngestResult = {
 };
 
 export type ConnectorRuntime = ConnectorDefinition & {
+  backfill?: (
+    options?: ConnectorIngestOptions,
+  ) => Promise<ConnectorIngestResult>;
   discoverLiveTools?: () => Promise<ConnectorIngestResult>;
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
   mcpEndpoints?: McpEndpointId[];
@@ -61,6 +65,7 @@ export type ConnectorRetentionConfig = {
 };
 
 export type ConnectorState = {
+  backfill?: SliceWalkState;
   lastRunAt?: string;
   latestIds?: Record<string, string>;
   runs?: ConnectorRunSummary[];

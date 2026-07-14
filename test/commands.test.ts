@@ -401,3 +401,52 @@ describe("parseCommand — explore", () => {
     ).toBe(true);
   });
 });
+
+describe("parseCommand — backfill", () => {
+  test("defaults to all configured sources", () => {
+    expect(parseCommand(["backfill"])).toEqual({
+      exitCode: 0,
+      kind: "backfill",
+      target: "all",
+    });
+  });
+
+  test("accepts connector and source-instance targets", () => {
+    expect(parseCommand(["backfill", "glean"])).toEqual({
+      exitCode: 0,
+      kind: "backfill",
+      target: "glean",
+    });
+    expect(parseCommand(["backfill", "web-search-2"])).toEqual({
+      exitCode: 0,
+      kind: "backfill",
+      target: { id: "web-search-2", kind: "source-instance" },
+    });
+  });
+
+  test("rejects options and invalid extra arguments", () => {
+    expect(parseCommand(["backfill", "--whatever"])).toEqual({
+      exitCode: 1,
+      kind: "error",
+      message: "Unknown option for backfill: --whatever",
+    });
+    expect(parseCommand(["backfill", "glean", "extra"])).toEqual({
+      exitCode: 1,
+      kind: "error",
+      message: "Usage: openwiki backfill <source|source-instance|all>",
+    });
+  });
+
+  test("lists Backfill in help", () => {
+    expect(helpContent.usage).toContain(
+      "openwiki backfill <source|source-instance|all>",
+    );
+    expect(
+      helpContent.commands.some(
+        ({ description, label }) =>
+          label.includes("backfill") && description.includes("runs dry"),
+      ),
+    ).toBe(true);
+    expect(helpContent.examples).toContain("openwiki backfill glean");
+  });
+});
