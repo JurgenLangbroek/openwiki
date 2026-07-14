@@ -50,6 +50,11 @@ export type RunLedgerEvent =
     }
   | { message: string; type: "warning" };
 
+export type RunLedgerEscalationEvent = Extract<
+  RunLedgerEvent,
+  { type: "escalation" }
+>;
+
 export type RunLedger = {
   connectorId: string;
   events: RunLedgerEvent[];

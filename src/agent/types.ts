@@ -1,3 +1,5 @@
+import type { RunLedgerEscalationEvent } from "../connectors/run-ledger.js";
+
 export type OpenWikiCommand = "chat" | "init" | "update";
 export type OpenWikiOutputMode = "local-wiki" | "repository";
 
@@ -35,6 +37,7 @@ export type OpenWikiRunOptions = {
   debug?: boolean;
   isFollowup?: boolean;
   modelId?: string | null;
+  onEscalation?: (event: RunLedgerEscalationEvent) => void;
   onEvent?: (event: OpenWikiRunEvent) => void;
   outputMode?: OpenWikiOutputMode;
   threadId?: string;

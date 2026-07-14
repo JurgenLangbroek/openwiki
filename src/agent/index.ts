@@ -176,7 +176,9 @@ async function runOpenWikiAgentCore(
   );
   const agent = createDeepAgent({
     model,
-    tools: createOpenWikiConnectorTools(),
+    tools: createOpenWikiConnectorTools({
+      onEscalation: options.onEscalation,
+    }),
     checkpointer,
     backend: new OpenWikiLocalShellBackend({
       docsOnly: command !== "chat",

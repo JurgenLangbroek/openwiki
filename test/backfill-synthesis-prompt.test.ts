@@ -57,5 +57,17 @@ describe("Backfill synthesis prompt", () => {
       /backfill-history instructions.*override.*reusable policy.*\/commitments\.md.*current-status.*does not apply/isu,
     );
     expect(message).toMatch(/Do not run other source ingestions/iu);
+    expect(message).toMatch(/Prefer the index.*cached copy/iu);
+    expect(message).toContain("openwiki_find_gateway_datasource_tools");
+    expect(message).toContain("openwiki_gateway_datasource_read");
+    expect(message).toMatch(/cached copy.*missing or too thin.*escalate/isu);
+    expect(message).toMatch(
+      /write-shaped downstream tools are always refused/iu,
+    );
+    expect(message).toMatch(/re-reading the same document.*refused/iu);
+    expect(message).toContain(
+      "Every escalation is recorded in this source's Run Ledger",
+    );
+    expect(message).not.toContain("generally available");
   });
 });

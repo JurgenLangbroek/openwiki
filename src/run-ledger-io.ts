@@ -4,6 +4,7 @@ import { getOpenWikiLocalWikiDir } from "./openwiki-home.js";
 import {
   createNoWatermarkEvent,
   type RunLedger,
+  type RunLedgerEscalationEvent,
   type RunLedgerMode,
   upsertRunLedgerSection,
 } from "./connectors/run-ledger.js";
@@ -12,6 +13,7 @@ import type { ConnectorId, ConnectorIngestResult } from "./connectors/types.js";
 export type BuildRunLedgerFromResultInput = {
   connectorId: ConnectorId;
   errorMessage?: string;
+  escalationEvents?: RunLedgerEscalationEvent[];
   fallbackMessage: string;
   fallbackRunId: string;
   mode: RunLedgerMode;
@@ -20,9 +22,40 @@ export type BuildRunLedgerFromResultInput = {
   status?: RunLedger["status"];
 };
 
+type RunLedgerBestEffortInput = BuildRunLedgerFromResultInput & {
+  displayName: string;
+  onError: (message: string) => void;
+};
+
+export type RunLedgerEscalationRecorder = {
+  events: RunLedgerEscalationEvent[];
+  flush: (input: RunLedgerBestEffortInput) => Promise<void>;
+  record: (event: RunLedgerEscalationEvent) => void;
+};
+
+export function createRunLedgerEscalationRecorder(): RunLedgerEscalationRecorder {
+  const events: RunLedgerEscalationEvent[] = [];
+
+  return {
+    events,
+    flush: async (input) => {
+      if (events.length === 0) {
+        return;
+      }
+
+      await writeRunLedgerBestEffort({
+        ...input,
+        escalationEvents: events,
+      });
+    },
+    record: (event) => events.push(event),
+  };
+}
+
 export function buildRunLedgerFromResult({
   connectorId,
   errorMessage,
+  escalationEvents,
   fallbackMessage,
   fallbackRunId,
   mode,
@@ -32,12 +65,15 @@ export function buildRunLedgerFromResult({
 }: BuildRunLedgerFromResultInput): RunLedger {
   return {
     connectorId,
-    events: result?.ledgerEvents ?? [
-      createNoWatermarkEvent(startedAt),
-      ...(result?.warnings ?? []).map((message) => ({
-        message,
-        type: "warning" as const,
-      })),
+    events: [
+      ...(result?.ledgerEvents ?? [
+        createNoWatermarkEvent(startedAt),
+        ...(result?.warnings ?? []).map((message) => ({
+          message,
+          type: "warning" as const,
+        })),
+      ]),
+      ...(escalationEvents ?? []),
     ],
     message: errorMessage ?? result?.message ?? fallbackMessage,
     mode,
@@ -51,10 +87,7 @@ export async function writeRunLedgerBestEffort({
   displayName,
   onError,
   ...input
-}: BuildRunLedgerFromResultInput & {
-  displayName: string;
-  onError: (message: string) => void;
-}): Promise<void> {
+}: RunLedgerBestEffortInput): Promise<void> {
   try {
     await writeRunLedger(buildRunLedgerFromResult(input));
   } catch (error) {

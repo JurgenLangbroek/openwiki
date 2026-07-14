@@ -28,6 +28,9 @@ import {
   discoverGatewayDatasourceTools,
 } from "./gateway-read.js";
 import { createGatewayTripwireState } from "./gateway-tripwires.js";
+import { getMcpErrorMessage } from "./mcp-errors.js";
+import { sanitizeMcpValue } from "./mcp-runtime-support.js";
+import type { RunLedgerEscalationEvent } from "./run-ledger.js";
 import {
   MCP_ENDPOINT_IDS,
   type ConnectorId,
@@ -35,7 +38,15 @@ import {
   type McpEndpointId,
 } from "./types.js";
 
-export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
+export type OpenWikiConnectorToolsOptions = {
+  onEscalation?: (event: RunLedgerEscalationEvent) => void;
+};
+
+const MAX_ESCALATION_TARGET_LENGTH = 120;
+
+export function createOpenWikiConnectorTools(
+  options: OpenWikiConnectorToolsOptions = {},
+): StructuredToolInterface[] {
   const connectorIds = [...CONNECTOR_IDS].sort();
   const mcpConnectorIds = getMcpConnectorIds();
   const mcpConnectorId = mcpConnectorIds[0];
@@ -167,16 +178,43 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
         required: ["connectorId", "serverId", "toolName"],
         additionalProperties: false,
       } as const,
-      func: async (input) =>
-        stringifyToolResult(
-          await readGatewayDatasource({
-            args: getRecordInput(input, "args") ?? {},
-            connectorId: getConnectorId(input, "connectorId"),
-            serverId: getStringInput(input, "serverId"),
-            toolName: getStringInput(input, "toolName"),
+      func: async (input) => {
+        const args = getRecordInput(input, "args") ?? {};
+        const connectorId = getConnectorId(input, "connectorId");
+        const serverId = getStringInput(input, "serverId");
+        const target = createEscalationTarget(args);
+        const toolName = getStringInput(input, "toolName");
+        let result: Awaited<ReturnType<typeof readGatewayDatasource>>;
+
+        try {
+          result = await readGatewayDatasource({
+            args,
+            connectorId,
+            serverId,
+            toolName,
             tripwires: gatewayTripwires,
-          }),
-        ),
+          });
+        } catch (error) {
+          recordEscalation(options, {
+            outcome: "failed",
+            reason: getMcpErrorMessage(error),
+            serverId,
+            ...(target ? { target } : {}),
+            toolName,
+            type: "escalation",
+          });
+          throw error;
+        }
+
+        recordEscalation(options, {
+          outcome: "ok",
+          serverId,
+          ...(target ? { target } : {}),
+          toolName,
+          type: "escalation",
+        });
+        return stringifyToolResult(result);
+      },
     }),
     new DynamicStructuredTool({
       name: "openwiki_ingest_connector",
@@ -269,6 +307,33 @@ export function createOpenWikiConnectorTools(): StructuredToolInterface[] {
         ),
     }),
   ];
+}
+
+function createEscalationTarget(
+  args: Record<string, unknown>,
+): string | undefined {
+  if (Object.keys(args).length === 0) {
+    return undefined;
+  }
+
+  const target = JSON.stringify(sanitizeMcpValue(args));
+  const targetCodePoints = [...target];
+  return targetCodePoints.length <= MAX_ESCALATION_TARGET_LENGTH
+    ? target
+    : `${targetCodePoints
+        .slice(0, MAX_ESCALATION_TARGET_LENGTH - 1)
+        .join("")}…`;
+}
+
+function recordEscalation(
+  options: OpenWikiConnectorToolsOptions,
+  event: RunLedgerEscalationEvent,
+): void {
+  try {
+    options.onEscalation?.(event);
+  } catch {
+    // Recording is observational and must not influence gateway read policy.
+  }
 }
 
 async function listConnectors() {

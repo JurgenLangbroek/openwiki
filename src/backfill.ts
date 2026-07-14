@@ -21,7 +21,10 @@ import {
   type OpenWikiOnboardingConfig,
 } from "./onboarding.js";
 import { ensureOpenWikiHome } from "./openwiki-home.js";
-import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
+import {
+  createRunLedgerEscalationRecorder,
+  writeRunLedgerBestEffort,
+} from "./run-ledger-io.js";
 
 export type SourceBackfillResult = {
   backfillPull: ConnectorIngestResult;
@@ -95,6 +98,7 @@ async function runSourceBackfill({
 
   const fallbackRunId = createRunId();
   const startedAt = new Date().toISOString();
+  const escalationRecorder = createRunLedgerEscalationRecorder();
   let backfillPull: ConnectorIngestResult;
   try {
     backfillPull = connector.backfill
@@ -140,10 +144,21 @@ async function runSourceBackfill({
           config,
           connector,
           emit,
+          onEscalation: escalationRecorder.record,
           pull: backfillPull,
           sourceConfig,
         })
       : undefined;
+  await escalationRecorder.flush({
+    connectorId: connector.id,
+    displayName,
+    fallbackMessage: `${displayName} Backfill produced no result.`,
+    fallbackRunId,
+    mode: "backfill",
+    onError: (message) => emitText(emit, `${message}\n`),
+    result: backfillPull,
+    startedAt,
+  });
   return {
     backfillPull,
     connectorId: connector.id,

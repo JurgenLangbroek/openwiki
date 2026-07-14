@@ -24,7 +24,10 @@ import {
   createSourceSynthesisPolicy,
   type IngestionTarget,
 } from "./ingestion.js";
-import { createLiveToolsSection } from "./live-tools-section.js";
+import {
+  createEscalationSection,
+  createLiveToolsSection,
+} from "./live-tools-section.js";
 import {
   readOpenWikiOnboardingConfig,
   type OnboardingSourceInstanceConfig,
@@ -35,7 +38,10 @@ import {
   getConnectorConfigPath,
   getOpenWikiLocalWikiDir,
 } from "./openwiki-home.js";
-import { writeRunLedgerBestEffort } from "./run-ledger-io.js";
+import {
+  createRunLedgerEscalationRecorder,
+  writeRunLedgerBestEffort,
+} from "./run-ledger-io.js";
 
 export type SourceExplorationResult = {
   agentResult?: OpenWikiRunResult;
@@ -191,7 +197,7 @@ Source-specific instructions:
 ${sourceConfig.ingestionGoal?.trim() || "(not provided)"}
 
 Reusable synthesis policy:
-${createSourceSynthesisPolicy(connector.id)}${liveToolsSection}${agenticTools}
+${createSourceSynthesisPolicy(connector.id)}${liveToolsSection}${createEscalationSection(connector, "exploration")}${agenticTools}
 
 Instructions:
 - Prioritize Active questions that look answerable with the available tools. Gather targeted evidence and update the relevant canonical wiki pages, including project and people pages.
@@ -224,6 +230,7 @@ async function runSourceExploration({
   const fallbackRunId = createRunId();
   const startedAt = new Date().toISOString();
   const onLedgerError = (message: string) => emitText(emit, `${message}\n`);
+  const escalationRecorder = createRunLedgerEscalationRecorder();
   try {
     discovery =
       connector.posture === "hybrid"
@@ -275,6 +282,7 @@ async function runSourceExploration({
     const agentResult = await runOpenWikiAgent("update", wikiDir, {
       isFollowup: false,
       modelId,
+      onEscalation: escalationRecorder.record,
       onEvent: emit,
       outputMode: "local-wiki",
       threadId: createOpenWikiThreadId(cwd),
@@ -284,6 +292,17 @@ async function runSourceExploration({
         discovery,
         sourceConfig,
       }),
+    });
+
+    await escalationRecorder.flush({
+      connectorId: connector.id,
+      displayName: connector.displayName,
+      fallbackMessage: `No connector discovery result was recorded for ${connector.displayName}.`,
+      fallbackRunId,
+      mode: "explore",
+      onError: onLedgerError,
+      result: discovery,
+      startedAt,
     });
 
     if (connector.posture === "hybrid" && !agentResult.skipped) {
@@ -308,6 +327,7 @@ async function runSourceExploration({
       connectorId: connector.id,
       displayName: connector.displayName,
       errorMessage: message,
+      escalationEvents: escalationRecorder.events,
       fallbackMessage: `No connector discovery result was recorded for ${connector.displayName}.`,
       fallbackRunId,
       mode: "explore",
