@@ -3,7 +3,11 @@ import { createOpenWikiThreadId, runOpenWikiAgent } from "./agent/index.js";
 import type { OpenWikiRunEvent } from "./agent/types.js";
 import {
   chunkBackfillItems,
+  DEFAULT_BACKFILL_CHUNKER_CONFIG,
+  isBackfillItemWithinAge,
+  type BackfillChunkerOptions,
   type BackfillSynthesisChunk,
+  type BackfillSynthesisOrder,
   type JsonObject,
 } from "./connectors/backfill-chunker.js";
 import {
@@ -33,15 +37,34 @@ export type BackfillSynthesisSummary = {
 };
 
 type LoadedBackfillSlices = {
+  includedItemSliceFilePaths: Set<string>;
+  itemSliceFilePaths: Set<string>;
   items: JsonObject[];
   sliceFilePaths: Set<string>;
 };
 
-async function loadBackfillSlices(
+type LoadedBackfillItem = {
+  item: JsonObject;
+  sliceFilePaths: Set<string>;
+};
+
+type LoadedFeedBackfillItem = LoadedBackfillItem & {
+  hasContent: boolean;
+};
+
+type ResolvedBackfillSynthesisControls = {
+  maxAgeDays?: number;
+  now: number;
+  order: BackfillSynthesisOrder;
+};
+
+export async function loadBackfillSlices(
   rawFiles: string[],
+  ageOptions: Pick<BackfillChunkerOptions, "maxAgeDays" | "now"> = {},
 ): Promise<LoadedBackfillSlices> {
-  const feedItems: JsonObject[] = [];
-  const expandedItems: JsonObject[] = [];
+  const feedItems: LoadedFeedBackfillItem[] = [];
+  const expandedItems: LoadedBackfillItem[] = [];
+  const itemSliceFilePaths = new Set<string>();
   const sliceFilePaths = new Set<string>();
 
   for (const rawFile of rawFiles) {
@@ -52,51 +75,118 @@ async function loadBackfillSlices(
       }
 
       sliceFilePaths.add(rawFile);
-      feedItems.push(
+      const sliceExpandedItems =
+        isJsonObject(value.expanded) && Array.isArray(value.expanded.items)
+          ? value.expanded.items.filter(isJsonObject)
+          : [];
+      const expandedContentIds = new Set(
+        sliceExpandedItems.flatMap((item) =>
+          typeof item.id === "string" && hasNonEmptyString(item.content)
+            ? [item.id]
+            : [],
+        ),
+      );
+      const sliceFeedItems = [
         ...value.myWork.items.filter(isJsonObject),
         ...value.messages.items.filter(isJsonObject),
-      );
-      if (isJsonObject(value.expanded) && Array.isArray(value.expanded.items)) {
-        expandedItems.push(...value.expanded.items.filter(isJsonObject));
+      ];
+      if (sliceFeedItems.length > 0 || sliceExpandedItems.length > 0) {
+        itemSliceFilePaths.add(rawFile);
       }
+      feedItems.push(
+        ...sliceFeedItems.map((item) => ({
+          hasContent:
+            hasNonEmptyString(item.content) ||
+            (typeof item.id === "string" && expandedContentIds.has(item.id)),
+          item,
+          sliceFilePaths: new Set([rawFile]),
+        })),
+      );
+      expandedItems.push(
+        ...sliceExpandedItems.map((item) => ({
+          item,
+          sliceFilePaths: new Set([rawFile]),
+        })),
+      );
     } catch {
       // Backfill raw files also include probe artifacts and may disappear by retry.
     }
   }
 
-  const mergedFeedItems = feedItems.map((item) => ({ ...item }));
-  const feedIndexesById = new Map<string, number[]>();
-  for (const [index, item] of mergedFeedItems.entries()) {
+  const mergedFeedItems: LoadedFeedBackfillItem[] = [];
+  const feedIndexById = new Map<string, number>();
+  for (const { hasContent, item, sliceFilePaths } of feedItems) {
     if (typeof item.id !== "string") {
+      mergedFeedItems.push({
+        hasContent,
+        item: { ...item },
+        sliceFilePaths,
+      });
       continue;
     }
-    feedIndexesById.set(item.id, [
-      ...(feedIndexesById.get(item.id) ?? []),
-      index,
-    ]);
+    const existingIndex = feedIndexById.get(item.id);
+    if (existingIndex === undefined) {
+      feedIndexById.set(item.id, mergedFeedItems.length);
+      mergedFeedItems.push({
+        hasContent,
+        item: { ...item },
+        sliceFilePaths,
+      });
+      continue;
+    }
+    const existing = mergedFeedItems[existingIndex];
+    if (existing) {
+      existing.sliceFilePaths = new Set([
+        ...existing.sliceFilePaths,
+        ...sliceFilePaths,
+      ]);
+    }
+    if (!existing?.hasContent && hasContent) {
+      mergedFeedItems[existingIndex] = {
+        hasContent,
+        item: { ...item },
+        sliceFilePaths: existing?.sliceFilePaths ?? sliceFilePaths,
+      };
+    }
   }
 
-  const unmatchedExpandedItems: JsonObject[] = [];
-  for (const expandedItem of expandedItems) {
-    const feedIndexes =
+  const unmatchedExpandedItems: LoadedBackfillItem[] = [];
+  for (const expandedEntry of expandedItems) {
+    const expandedItem = expandedEntry.item;
+    const feedIndex =
       typeof expandedItem.id === "string"
-        ? feedIndexesById.get(expandedItem.id)
+        ? feedIndexById.get(expandedItem.id)
         : undefined;
-    if (!feedIndexes || feedIndexes.length === 0) {
-      unmatchedExpandedItems.push(expandedItem);
+    if (feedIndex === undefined) {
+      unmatchedExpandedItems.push(expandedEntry);
       continue;
     }
 
-    for (const feedIndex of feedIndexes) {
-      const feedItem = mergedFeedItems[feedIndex];
-      if (feedItem) {
-        mergedFeedItems[feedIndex] = mergeExpandedItem(feedItem, expandedItem);
-      }
+    const feedEntry = mergedFeedItems[feedIndex];
+    if (feedEntry) {
+      mergedFeedItems[feedIndex] = {
+        hasContent: feedEntry.hasContent,
+        item: mergeExpandedItem(feedEntry.item, expandedItem),
+        sliceFilePaths: new Set([
+          ...feedEntry.sliceFilePaths,
+          ...expandedEntry.sliceFilePaths,
+        ]),
+      };
     }
   }
+
+  const includedEntries = [
+    ...mergedFeedItems,
+    ...unmatchedExpandedItems,
+  ].filter(({ item }) => isBackfillItemWithinAge(item, ageOptions));
+  const includedItemSliceFilePaths = new Set(
+    includedEntries.flatMap(({ sliceFilePaths }) => [...sliceFilePaths]),
+  );
 
   return {
-    items: [...mergedFeedItems, ...unmatchedExpandedItems],
+    includedItemSliceFilePaths,
+    itemSliceFilePaths,
+    items: includedEntries.map(({ item }) => item),
     sliceFilePaths,
   };
 }
@@ -126,15 +216,39 @@ export async function runBackfillSynthesis({
       ...priorUnsynthesizedRuns.flatMap((run) => run.rawFiles),
     ]),
   ];
-  const { items, sliceFilePaths } = await loadBackfillSlices(rawFiles);
+  const synthesisControls = resolveBackfillSynthesisControls(
+    sourceConfig.connectorConfig,
+  );
+  const {
+    includedItemSliceFilePaths,
+    itemSliceFilePaths,
+    items,
+    sliceFilePaths,
+  } = await loadBackfillSlices(rawFiles, synthesisControls);
   const contributingPriorRuns = priorUnsynthesizedRuns.filter((run) =>
     runContributedSliceFiles(run, sliceFilePaths),
   );
   const contributingRunIds = [
-    ...(pull.rawFiles.some((rawFile) => sliceFilePaths.has(rawFile))
+    ...(runShouldBeMarkedSynthesized(
+      pull.rawFiles,
+      synthesisControls,
+      sliceFilePaths,
+      itemSliceFilePaths,
+      includedItemSliceFilePaths,
+    )
       ? [pull.runId]
       : []),
-    ...contributingPriorRuns.map((run) => run.runId),
+    ...contributingPriorRuns.flatMap((run) =>
+      runShouldBeMarkedSynthesized(
+        run.rawFiles,
+        synthesisControls,
+        sliceFilePaths,
+        itemSliceFilePaths,
+        includedItemSliceFilePaths,
+      )
+        ? [run.runId]
+        : [],
+    ),
   ];
   if (contributingPriorRuns.length > 0) {
     emitText(
@@ -151,7 +265,9 @@ export async function runBackfillSynthesis({
     return { chunkCount: 0, itemCount: 0, status: "skipped" };
   }
 
-  const chunks = chunkBackfillItems(items);
+  const chunks = chunkBackfillItems(items, DEFAULT_BACKFILL_CHUNKER_CONFIG, {
+    order: synthesisControls.order,
+  });
   const itemCount = chunks.reduce(
     (count, chunk) => count + chunk.items.length,
     0,
@@ -182,6 +298,7 @@ export async function runBackfillSynthesis({
           config,
           connector,
           sourceConfig,
+          synthesisOrder: synthesisControls.order,
         }),
       });
     }
@@ -214,6 +331,7 @@ export function createBackfillSynthesisMessage({
   config,
   connector,
   sourceConfig,
+  synthesisOrder = "oldest-first",
 }: {
   chunk: BackfillSynthesisChunk;
   chunkCount: number;
@@ -221,6 +339,7 @@ export function createBackfillSynthesisMessage({
   config: OpenWikiOnboardingConfig;
   connector: ConnectorRuntime;
   sourceConfig: OnboardingSourceInstanceConfig;
+  synthesisOrder?: BackfillSynthesisOrder;
 }): string {
   const ingestionGoal = sourceConfig.ingestionGoal?.trim();
   const sourceDisplayName = sourceConfig.name ?? connector.displayName;
@@ -232,7 +351,7 @@ Run OpenWiki backfill synthesis chunk ${chunk.index} of ${chunkCount} for ${sour
 Scope:
 - This is one historical Backfill synthesis chunk for source instance ${sourceConfig.id}${sourceConfig.name ? ` (${sourceConfig.name})` : ""}.
 - The chunk covers roughly ${chunk.spanFrom ?? "an unknown start date"} → ${chunk.spanTo ?? "an unknown end date"}.
-- Backfill chunks are processed chronologically, oldest → newest, so project and collaboration arcs accrete in the order events unfolded.
+- Backfill chunks are processed ${synthesisOrder === "newest-first" ? "newest → oldest, prioritizing recent history when a run stops early" : "chronologically, oldest → newest, so project and collaboration arcs accrete in the order events unfolded"}.
 - This content is historical and may be months old. It is not “now” and must not be treated as current merely because it appears in this run.
 
 User wiki goal:
@@ -335,6 +454,49 @@ async function markContributingRunsSynthesized(
   for (const runId of new Set(runIds)) {
     await markRunSynthesized(connectorId, runId, synthesizedAt);
   }
+}
+
+function resolveBackfillSynthesisControls(
+  connectorConfig: Record<string, unknown> | undefined,
+): ResolvedBackfillSynthesisControls {
+  const backfill = isJsonObject(connectorConfig?.backfill)
+    ? connectorConfig.backfill
+    : undefined;
+  const synthesis = isJsonObject(backfill?.synthesis)
+    ? backfill.synthesis
+    : undefined;
+  const maxAgeDays = synthesis?.maxAgeDays;
+
+  return {
+    ...(typeof maxAgeDays === "number" &&
+    Number.isFinite(maxAgeDays) &&
+    maxAgeDays >= 0
+      ? { maxAgeDays }
+      : {}),
+    now: Date.now(),
+    order:
+      synthesis?.order === "newest-first" ? "newest-first" : "oldest-first",
+  };
+}
+
+function runShouldBeMarkedSynthesized(
+  rawFiles: string[],
+  controls: ResolvedBackfillSynthesisControls,
+  sliceFilePaths: Set<string>,
+  itemSliceFilePaths: Set<string>,
+  includedItemSliceFilePaths: Set<string>,
+): boolean {
+  if (!rawFiles.some((rawFile) => sliceFilePaths.has(rawFile))) {
+    return false;
+  }
+  if (controls.maxAgeDays === undefined) {
+    return true;
+  }
+  if (!rawFiles.some((rawFile) => itemSliceFilePaths.has(rawFile))) {
+    return true;
+  }
+
+  return rawFiles.some((rawFile) => includedItemSliceFilePaths.has(rawFile));
 }
 
 function runContributedSliceFiles(

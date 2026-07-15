@@ -72,6 +72,49 @@ describe("Backfill Chunker", () => {
     ]);
   });
 
+  test("can traverse newest chunks first while preserving chronology within each chunk", () => {
+    const chunks = chunkBackfillItems(
+      [
+        { createdAt: "2026-01-01T00:00:00.000Z", id: "oldest" },
+        { createdAt: "2026-02-01T00:00:00.000Z", id: "older" },
+        { createdAt: "2026-03-01T00:00:00.000Z", id: "newer" },
+        { createdAt: "2026-04-01T00:00:00.000Z", id: "newest" },
+      ],
+      { maxContentCharsPerChunk: 1_000, maxItemsPerChunk: 2 },
+      { order: "newest-first" },
+    );
+
+    expect(
+      chunks.map(({ index, items }) => ({
+        ids: items.map((item) => item.id),
+        index,
+      })),
+    ).toEqual([
+      { ids: ["newer", "newest"], index: 1 },
+      { ids: ["oldest", "older"], index: 2 },
+    ]);
+  });
+
+  test("excludes items older than maxAgeDays and includes the exact cutoff", () => {
+    const chunks = chunkBackfillItems(
+      [
+        { createdAt: "2026-06-14T23:59:59.999Z", id: "too-old" },
+        { createdAt: "2026-06-15T00:00:00.000Z", id: "at-cutoff" },
+        { createdAt: "2026-07-01T00:00:00.000Z", id: "recent" },
+      ],
+      { maxContentCharsPerChunk: 1_000, maxItemsPerChunk: 25 },
+      {
+        maxAgeDays: 30,
+        now: Date.parse("2026-07-15T00:00:00.000Z"),
+      },
+    );
+
+    expect(chunks[0]?.items.map((item) => item.id)).toEqual([
+      "at-cutoff",
+      "recent",
+    ]);
+  });
+
   test("cuts on content cost and preserves one oversized item in its own non-empty chunk", () => {
     const chunks = chunkBackfillItems(
       [

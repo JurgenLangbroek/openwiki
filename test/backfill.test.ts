@@ -48,6 +48,7 @@ vi.mock("../src/connectors/registry.ts", () => ({
 }));
 
 import { runOpenWikiBackfill } from "../src/backfill.ts";
+import { loadBackfillSlices } from "../src/backfill-synthesis.ts";
 import {
   readConnectorState,
   writeConnectorState,
@@ -93,6 +94,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   if (originalOpenWikiHome === undefined) {
     delete process.env.OPENWIKI_HOME;
   } else {
@@ -102,6 +104,114 @@ afterEach(async () => {
 });
 
 describe("runOpenWikiBackfill", () => {
+  test("deduplicates feed items before merging expanded content", async () => {
+    const runId = "run-deduplicated-feed";
+    const titleOnlySlice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0001.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              id: "shared-document",
+              title: "Title-only copy",
+              updatedAt: "2026-06-01T00:00:00.000Z",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 1,
+      },
+    );
+    const expandedSlice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0002.json",
+      {
+        expanded: {
+          items: [
+            {
+              content: "Expanded document content",
+              id: "shared-document",
+              title: "Content-rich copy",
+            },
+          ],
+          stream: "expanded",
+        },
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              id: "shared-document",
+              title: "Content-rich copy",
+              updatedAt: "2026-06-02T00:00:00.000Z",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 2,
+      },
+    );
+
+    const loaded = await loadBackfillSlices([titleOnlySlice, expandedSlice]);
+
+    expect(loaded.items).toEqual([
+      expect.objectContaining({
+        content: "Expanded document content",
+        id: "shared-document",
+        title: "Content-rich copy",
+      }),
+    ]);
+  });
+
+  test("prefers a directly content-bearing feed duplicate", async () => {
+    const runId = "run-content-bearing-feed";
+    const titleOnlySlice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0001.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [{ id: "shared-document", title: "Title-only copy" }],
+          stream: "my-work",
+        },
+        sliceNumber: 1,
+      },
+    );
+    const contentSlice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0002.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              content: "Content already present in the feed",
+              id: "shared-document",
+              title: "Content-rich copy",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 2,
+      },
+    );
+
+    const loaded = await loadBackfillSlices([titleOnlySlice, contentSlice]);
+
+    expect(loaded.items).toEqual([
+      expect.objectContaining({
+        content: "Content already present in the feed",
+        id: "shared-document",
+        title: "Content-rich copy",
+      }),
+    ]);
+  });
+
   test("synthesizes shaped slice history oldest first and stamps the run", async () => {
     const runId = "run-synthesis";
     const newerSlice = await writeRawJson(
@@ -250,6 +360,95 @@ describe("runOpenWikiBackfill", () => {
     expect(state.runs[0]?.synthesizedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
   });
 
+  test("applies newest-first and maxAgeDays from Glean Backfill synthesis config", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    const runId = "run-controlled-synthesis";
+    const slice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0001.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              content: "O".repeat(50_000),
+              id: "older-eligible",
+              updatedAt: "2026-06-01T00:00:00.000Z",
+            },
+            {
+              content: "N".repeat(50_000),
+              id: "newest-eligible",
+              updatedAt: "2026-07-01T00:00:00.000Z",
+            },
+            {
+              content: "X".repeat(50_000),
+              id: "age-excluded",
+              updatedAt: "2020-01-01T00:00:00.000Z",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 1,
+      },
+    );
+    await writeConnectorState("glean", {
+      runs: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          rawFiles: [slice],
+          runId,
+          status: "success",
+          warnings: [],
+        },
+      ],
+      version: 1,
+    });
+    mocks.readConfig.mockResolvedValue({
+      sourceInstances: [
+        {
+          connectedAt: "2026-07-01T00:00:00.000Z",
+          connectorConfig: {
+            backfill: {
+              synthesis: { maxAgeDays: 60, order: "newest-first" },
+            },
+            instance: "acme",
+          },
+          connectorId: "glean",
+          id: "glean-primary",
+          name: "Work Glean",
+        },
+      ],
+      sources: {},
+      version: 1,
+    });
+    mocks.gleanBackfill.mockResolvedValue({
+      connectorId: "glean",
+      message: "Backfill pulled controlled historical evidence.",
+      rawFiles: [slice],
+      runId,
+      statePath: "~/.openwiki/connectors/glean/state.json",
+      status: "success",
+      warnings: [],
+    });
+
+    const result = await runOpenWikiBackfill("ignored", { target: "glean" });
+
+    expect(result.results[0]).toMatchObject({
+      synthesis: { chunkCount: 2, itemCount: 2, status: "synthesized" },
+    });
+    const userMessages = mocks.runAgent.mock.calls.map(
+      (call) => (call[2] as { userMessage: string }).userMessage,
+    );
+    expect(userMessages[0]).toMatch(/2026-07-01.*newest → oldest/isu);
+    expect(userMessages[1]).toMatch(/2026-06-01.*newest → oldest/isu);
+    const state = await readConnectorState("glean");
+    expect(
+      state.runs?.find((run) => run.runId === runId)?.synthesizedAt,
+    ).toMatch(/^2026-07-15T/u);
+  });
+
   test("recovers prior unsynthesized slices and stamps only runs whose history was processed", async () => {
     const currentRunId = "run-current";
     const priorRunId = "run-prior";
@@ -380,6 +579,78 @@ describe("runOpenWikiBackfill", () => {
     expect(
       state.runs?.find((run) => run.runId === probeRunId),
     ).not.toHaveProperty("synthesizedAt");
+  });
+
+  test("leaves a run unsynthesized when maxAgeDays excludes all of its items", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T00:00:00.000Z"));
+    const runId = "run-fully-age-excluded";
+    const slice = await writeRawJson(
+      "glean",
+      runId,
+      "backfill-slice-0001.json",
+      {
+        messages: { items: [], stream: "messages" },
+        myWork: {
+          items: [
+            {
+              id: "too-old-to-synthesize",
+              updatedAt: "2020-01-01T00:00:00.000Z",
+            },
+          ],
+          stream: "my-work",
+        },
+        sliceNumber: 1,
+      },
+    );
+    await writeConnectorState("glean", {
+      runs: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          rawFiles: [slice],
+          runId,
+          status: "success",
+          warnings: [],
+        },
+      ],
+      version: 1,
+    });
+    mocks.readConfig.mockResolvedValue({
+      sourceInstances: [
+        {
+          connectedAt: "2026-07-01T00:00:00.000Z",
+          connectorConfig: {
+            backfill: { synthesis: { maxAgeDays: 30 } },
+            instance: "acme",
+          },
+          connectorId: "glean",
+          id: "glean-primary",
+          name: "Work Glean",
+        },
+      ],
+      sources: {},
+      version: 1,
+    });
+    mocks.gleanBackfill.mockResolvedValue({
+      connectorId: "glean",
+      message: "Backfill pulled old historical evidence.",
+      rawFiles: [slice],
+      runId,
+      statePath: "~/.openwiki/connectors/glean/state.json",
+      status: "success",
+      warnings: [],
+    });
+
+    const result = await runOpenWikiBackfill("ignored", { target: "glean" });
+
+    expect(result.results[0]).toMatchObject({
+      synthesis: { chunkCount: 0, itemCount: 0, status: "skipped" },
+    });
+    expect(mocks.runAgent).not.toHaveBeenCalled();
+    const state = await readConnectorState("glean");
+    expect(state.runs?.find((run) => run.runId === runId)).not.toHaveProperty(
+      "synthesizedAt",
+    );
   });
 
   test("does not synthesize a failed pull even when it reports raw artifacts", async () => {
