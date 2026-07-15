@@ -30,6 +30,7 @@ import {
   type RunLedgerEvent,
   type RunLedgerSlice,
 } from "../run-ledger.js";
+import type { BackfillSynthesisOrder } from "../backfill-chunker.js";
 import { createRateGate, type RateGate } from "../rate-gate.js";
 import type {
   ConnectorDefinition,
@@ -83,6 +84,10 @@ type GleanConfig = GleanTargetConfig &
       emptySliceLimit?: number;
       maxSlices?: number;
       sliceDays?: number;
+      synthesis?: {
+        maxAgeDays?: number;
+        order?: BackfillSynthesisOrder;
+      };
     };
     enabled?: boolean;
     expansion?: {
@@ -121,7 +126,10 @@ const DEFAULT_BACKFILL_CONFIG: SliceWalkConfig = {
 const DEFAULT_GLEAN_REQUESTS_PER_SECOND = 4;
 const DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT = 3;
 const DEFAULT_GLEAN_CONFIG: GleanConfig = {
-  backfill: DEFAULT_BACKFILL_CONFIG,
+  backfill: {
+    ...DEFAULT_BACKFILL_CONFIG,
+    synthesis: { order: "oldest-first" },
+  },
   enabled: false,
   expansion: {
     totalFailureSliceLimit: DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT,
@@ -973,12 +981,24 @@ function mergeGleanConfig(
   if (!override) {
     return config;
   }
+  const overrideBackfill = isJsonObject(override.backfill)
+    ? override.backfill
+    : undefined;
 
   return {
     ...config,
     ...override,
-    backfill: isJsonObject(override.backfill)
-      ? { ...config.backfill, ...override.backfill }
+    backfill: overrideBackfill
+      ? {
+          ...config.backfill,
+          ...overrideBackfill,
+          synthesis: isJsonObject(overrideBackfill.synthesis)
+            ? {
+                ...config.backfill?.synthesis,
+                ...overrideBackfill.synthesis,
+              }
+            : config.backfill?.synthesis,
+        }
       : config.backfill,
     expansion: isJsonObject(override.expansion)
       ? { ...config.expansion, ...override.expansion }

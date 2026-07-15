@@ -5,6 +5,16 @@ export type BackfillChunkerConfig = {
   maxItemsPerChunk: number;
 };
 
+export type BackfillSynthesisOrder = "newest-first" | "oldest-first";
+
+export type BackfillChunkerOptions = {
+  maxAgeDays?: number;
+  now?: number;
+  order?: BackfillSynthesisOrder;
+};
+
+const DAY_MILLISECONDS = 24 * 60 * 60 * 1_000;
+
 export const DEFAULT_BACKFILL_CHUNKER_CONFIG: BackfillChunkerConfig = {
   maxContentCharsPerChunk: 80_000,
   maxItemsPerChunk: 25,
@@ -20,6 +30,7 @@ export type BackfillSynthesisChunk = {
 export function chunkBackfillItems(
   items: JsonObject[],
   config = DEFAULT_BACKFILL_CHUNKER_CONFIG,
+  options: BackfillChunkerOptions = {},
 ): BackfillSynthesisChunk[] {
   if (items.length === 0) {
     return [];
@@ -45,7 +56,12 @@ export function chunkBackfillItems(
     }
   }
 
+  const ageOptions =
+    options.maxAgeDays === undefined || options.now !== undefined
+      ? options
+      : { ...options, now: Date.now() };
   const orderedItems = deduplicatedItems
+    .filter(({ item }) => isBackfillItemWithinAge(item, ageOptions))
     .map(({ inputIndex, item }) => ({
       inputIndex,
       item,
@@ -88,7 +104,31 @@ export function chunkBackfillItems(
     chunks.push(createChunk(chunks.length + 1, chunkItems));
   }
 
-  return chunks;
+  return options.order === "newest-first"
+    ? chunks.reverse().map((chunk, index) => ({ ...chunk, index: index + 1 }))
+    : chunks;
+}
+
+export function isBackfillItemWithinAge(
+  item: JsonObject,
+  options: Pick<BackfillChunkerOptions, "maxAgeDays" | "now">,
+): boolean {
+  if (
+    options.maxAgeDays === undefined ||
+    !Number.isFinite(options.maxAgeDays) ||
+    options.maxAgeDays < 0
+  ) {
+    return true;
+  }
+
+  const timestamp = getTimestamp(item);
+  if (!timestamp) {
+    return true;
+  }
+
+  const cutoff =
+    (options.now ?? Date.now()) - options.maxAgeDays * DAY_MILLISECONDS;
+  return timestamp.milliseconds >= cutoff;
 }
 
 function createChunk(
