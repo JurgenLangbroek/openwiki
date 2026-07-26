@@ -17,6 +17,10 @@ import type {
  * at the type level: a new connector id fails to compile until its posture is
  * declared here. There is deliberately no runtime default — a silent fallback
  * would let a new connector pick up a posture nobody chose.
+ *
+ * Exported for this module's own test. Consumers read posture off the runtime
+ * the registry stamps, never by looking an id up in here — that indirection is
+ * what keeps fixtures free to pair any id with any posture.
  */
 export const CONNECTOR_POSTURES = {
   "git-repo": "agentic",
