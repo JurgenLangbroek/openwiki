@@ -11,8 +11,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   getCredentialDiagnostics,
-  getOpenWikiEnvPath,
   loadOpenWikiEnv,
+  openWikiEnvPath,
   saveOpenWikiEnv,
 } from "../src/env.ts";
 import {
@@ -23,6 +23,7 @@ import {
   OPENWIKI_MODEL_ID_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
 } from "../src/constants.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 // `loadOpenWikiEnv`, `saveOpenWikiEnv`, and `getCredentialDiagnostics` all read
 // from / write to the `.env` file under the OpenWiki home. Pointing
@@ -49,7 +50,19 @@ let tempHome: string;
 beforeEach(async () => {
   originalHome = process.env.OPENWIKI_HOME;
   tempHome = await mkdtemp(path.join(tmpdir(), "openwiki-env-behavior-"));
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = tempHome;
+  resetOpenWikiHomePaths();
+
+  // Assert the isolation rather than trusting it. Every other test file that
+  // reaches the OpenWiki home fails loudly if its reset is dropped, because its
+  // expectations name the temp directory. This file only ever round-trips
+  // through `openWikiEnvPath`, so without the reset it would happily write the
+  // developer's real credential file and still pass. This is the only thing
+  // standing between a dropped reset and a clobbered ~/.openwiki/.env.
+  expect(openWikiEnvPath).toBe(path.join(tempHome, ".env"));
 
   for (const key of KEYS_UNDER_TEST) {
     delete process.env[key];
@@ -97,9 +110,9 @@ describe("loadOpenWikiEnv", () => {
     // process.env, even when present in ~/.openwiki/.env. Changing this
     // (e.g. un-deprecating OPENAI_BASE_URL) should be a deliberate decision
     // that updates this expectation.
-    await mkdir(path.dirname(getOpenWikiEnvPath()), { recursive: true });
+    await mkdir(path.dirname(openWikiEnvPath), { recursive: true });
     await writeFile(
-      getOpenWikiEnvPath(),
+      openWikiEnvPath,
       [
         "OPENAI_BASE_URL=https://gateway.example.com/v1",
         "OPENAI_ORG_ID=org-123",
@@ -137,7 +150,7 @@ describe("saveOpenWikiEnv", () => {
   test("writes the env file with 0600 permissions", async () => {
     await saveOpenWikiEnv({ [OPENAI_API_KEY_ENV_KEY]: "sk-test" });
 
-    const mode = (await stat(getOpenWikiEnvPath())).mode & 0o777;
+    const mode = (await stat(openWikiEnvPath)).mode & 0o777;
 
     // Owner read/write only; no group/other bits.
     expect(mode & 0o077).toBe(0);
@@ -147,12 +160,12 @@ describe("saveOpenWikiEnv", () => {
   test("strips deprecated keys from the persisted file", async () => {
     // A deprecated key written by an older OpenWiki version must not survive a
     // subsequent save, so stale deprecated values can't linger in the file.
-    await mkdir(path.dirname(getOpenWikiEnvPath()), { recursive: true });
-    await writeFile(getOpenWikiEnvPath(), "OPENAI_ORG_ID=stale-org\n", "utf8");
+    await mkdir(path.dirname(openWikiEnvPath), { recursive: true });
+    await writeFile(openWikiEnvPath, "OPENAI_ORG_ID=stale-org\n", "utf8");
 
     await saveOpenWikiEnv({ [OPENAI_API_KEY_ENV_KEY]: "sk-fresh" });
 
-    const contents = await readFile(getOpenWikiEnvPath(), "utf8");
+    const contents = await readFile(openWikiEnvPath, "utf8");
 
     expect(contents).not.toContain("OPENAI_ORG_ID");
     expect(contents).toContain("OPENAI_API_KEY=");
@@ -179,7 +192,7 @@ describe("getCredentialDiagnostics", () => {
   });
 
   test("reports an unset key as unset with no warnings", async () => {
-    await rm(getOpenWikiEnvPath(), { force: true });
+    await rm(openWikiEnvPath, { force: true });
 
     const diagnostics = await getCredentialDiagnostics();
     const entry = diagnostics.find(

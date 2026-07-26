@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { CronExpressionParser } from "cron-parser";
 import cronstrue from "cronstrue";
 import { configHasExplorableSource } from "./exploration-eligibility.js";
-import { ensureOpenWikiHome, getOpenWikiHomeDir } from "./openwiki-home.js";
+import { ensureOpenWikiHome, openWikiHomeDir } from "./openwiki-home.js";
 import type { ConnectorId } from "./connectors/types.js";
 import type {
   OnboardingSourceScheduleConfig,
@@ -205,7 +205,7 @@ async function installSchedule({
   }
 
   const launchAgentsDir = getLaunchAgentsDir();
-  const logsDir = path.join(getOpenWikiHomeDir(), "logs");
+  const logsDir = path.join(openWikiHomeDir, "logs");
   const plistPath = getLaunchAgentPath(agentKind);
   const agentConfig = getScheduledAgentConfig(agentKind);
 

@@ -8,6 +8,7 @@ import {
   buildRunLedgerFromResult,
   writeRunLedger,
 } from "../src/run-ledger-io.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 const originalHome = process.env.OPENWIKI_HOME;
 const originalToken = process.env.OPENWIKI_GLEAN_ACCESS_TOKEN;
@@ -15,7 +16,11 @@ let openWikiHome: string;
 
 beforeEach(async () => {
   openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-escalation-"));
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
   process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
   const connectorDir = path.join(openWikiHome, "connectors", "glean");
   await mkdir(connectorDir, { recursive: true });

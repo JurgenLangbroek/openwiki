@@ -2,15 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { OPEN_WIKI_DIR } from "./constants.js";
-import { ensureOpenWikiHome, getOpenWikiHomeDir } from "./openwiki-home.js";
+import { ensureOpenWikiHome, openWikiHomeDir } from "./openwiki-home.js";
 import type { ConnectorId } from "./connectors/types.js";
 
 export function getOpenWikiOnboardingPath(): string {
-  return path.join(getOpenWikiHomeDir(), "onboarding.json");
+  return path.join(openWikiHomeDir, "onboarding.json");
 }
 
 export function getOpenWikiInstructionsPath(): string {
-  return path.join(getOpenWikiHomeDir(), "INSTRUCTIONS.md");
+  return path.join(openWikiHomeDir, "INSTRUCTIONS.md");
 }
 export const REPOSITORY_INSTRUCTIONS_FILE = "INSTRUCTIONS.md";
 

@@ -52,7 +52,7 @@ import {
 } from "./connectors/sources/glean-backend.js";
 import { configHasExplorableSource } from "./exploration-eligibility.js";
 import { getConnectorConfigPath } from "./openwiki-home.js";
-import { getOpenWikiEnvPath, saveOpenWikiEnv } from "./env.js";
+import { openWikiEnvPath, saveOpenWikiEnv } from "./env.js";
 import {
   createEmptyOnboardingConfig,
   isOpenWikiOnboardingCompleteSync,
@@ -488,7 +488,7 @@ function getCredentialSetupDetail(
 
   return isCredentialConfigured(provider)
     ? "available from environment"
-    : `save ${getProviderApiKeyEnvKey(provider)} to ${getOpenWikiEnvPath()}`;
+    : `save ${getProviderApiKeyEnvKey(provider)} to ${openWikiEnvPath}`;
 }
 
 /**
@@ -2088,7 +2088,7 @@ export function InitSetup({
             detail={
               isBaseUrlConfigured(provider)
                 ? "available from environment"
-                : `save ${getProviderBaseUrlEnvKey(provider)} to ${getOpenWikiEnvPath()}`
+                : `save ${getProviderBaseUrlEnvKey(provider)} to ${openWikiEnvPath}`
             }
           />
         ) : null}

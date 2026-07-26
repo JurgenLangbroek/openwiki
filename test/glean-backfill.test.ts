@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { renderRunLedgerSection } from "../src/connectors/run-ledger.ts";
 import { createGleanConnector } from "../src/connectors/sources/glean.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 type SliceFetchInput = {
   backendUrl: string;
@@ -30,7 +31,11 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-07-14T12:00:00.000Z"));
   openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-backfill-"));
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
   process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
   await writeGleanConfig();
 });

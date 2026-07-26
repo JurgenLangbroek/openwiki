@@ -10,6 +10,7 @@ import {
   writeRunLedger,
   writeRunLedgerBestEffort,
 } from "../src/run-ledger-io.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 const originalOpenWikiHome = process.env.OPENWIKI_HOME;
 let openWikiHome: string;
@@ -28,7 +29,11 @@ function ledger(runId: string): RunLedger {
 
 beforeEach(async () => {
   openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-ledger-"));
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
 });
 
 afterEach(async () => {

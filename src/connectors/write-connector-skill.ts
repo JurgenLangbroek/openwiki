@@ -1,9 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ensureOpenWikiHome, getOpenWikiSkillsDir } from "../openwiki-home.js";
+import { ensureOpenWikiHome, openWikiSkillsDir } from "../openwiki-home.js";
 
 export function getWriteConnectorSkillPath(): string {
-  return path.join(getOpenWikiSkillsDir(), "write-connector.md");
+  return path.join(openWikiSkillsDir, "write-connector.md");
 }
 
 export async function ensureWriteConnectorSkill(): Promise<void> {

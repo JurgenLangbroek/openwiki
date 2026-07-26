@@ -29,7 +29,7 @@ import {
 import {
   ensureOpenWikiHome,
   getConnectorConfigPath,
-  getOpenWikiLocalWikiDir,
+  openWikiLocalWikiDir,
 } from "./openwiki-home.js";
 import {
   createEscalationSection,
@@ -102,7 +102,7 @@ export async function runOpenWikiIngestion(
       await runSourceIngestion({
         config,
         connector,
-        cwd: getOpenWikiLocalWikiDir(),
+        cwd: openWikiLocalWikiDir,
         emit: options.onEvent,
         modelId: options.modelId,
         sourceConfig,
