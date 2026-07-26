@@ -718,50 +718,60 @@ describe("connector run history retention", () => {
     };
   }
 
-  async function walkSlicesIntoState(
-    sliceCount: number,
-  ): Promise<ConnectorState> {
+  async function appendRunsToState(runCount: number): Promise<ConnectorState> {
     const { updateStateWithRun } = await import("../src/connectors/io.ts");
     let state: ConnectorState = { version: 1 };
 
-    for (let slice = 1; slice <= sliceCount; slice += 1) {
-      state = updateStateWithRun(state, createSliceRun(slice));
+    for (let run = 1; run <= runCount; run += 1) {
+      state = updateStateWithRun(state, createSliceRun(run));
     }
 
     return state;
   }
 
-  test("keeps every run of a Backfill that walks the Slice Walker's per-walk ceiling", async () => {
-    const { DEFAULT_SLICE_WALK_MAX_SLICES } =
+  test("keeps a run summary for every slice a Backfill's walk can cover", async () => {
+    const { SLICE_WALK_SANITY_CEILING } =
       await import("../src/connectors/slice-walker.ts");
-    const state = await walkSlicesIntoState(DEFAULT_SLICE_WALK_MAX_SLICES);
+    // Worst case for a Backfill that keeps making progress: it is interrupted
+    // after every slice, so it pays one run summary per slice it walks, and the
+    // Slice Walker caps a walk at SLICE_WALK_SANITY_CEILING slices.
+    const state = await appendRunsToState(SLICE_WALK_SANITY_CEILING);
 
-    // A resumed Backfill appends one run summary per invocation, so a walk
-    // interrupted after every slice costs one run summary per slice walked.
-    expect(state.runs).toHaveLength(DEFAULT_SLICE_WALK_MAX_SLICES);
+    expect(state.runs).toHaveLength(SLICE_WALK_SANITY_CEILING);
     expect(state.runs?.[0]?.runId).toBe(
-      formatSliceRunId(DEFAULT_SLICE_WALK_MAX_SLICES),
+      formatSliceRunId(SLICE_WALK_SANITY_CEILING),
     );
     expect(state.runs?.at(-1)?.runId).toBe(formatSliceRunId(1));
-    expect(state.lastRunAt).toBe(
-      createSliceRun(DEFAULT_SLICE_WALK_MAX_SLICES).at,
-    );
+    expect(state.lastRunAt).toBe(createSliceRun(SLICE_WALK_SANITY_CEILING).at);
   });
 
   test("evicts oldest-first once run history overflows the retained window", async () => {
-    const { DEFAULT_SLICE_WALK_MAX_SLICES } =
-      await import("../src/connectors/slice-walker.ts");
-    const sliceCount = DEFAULT_SLICE_WALK_MAX_SLICES + 2;
-    const state = await walkSlicesIntoState(sliceCount);
+    const { RETAINED_CONNECTOR_RUNS } = await import("../src/connectors/io.ts");
+    const runCount = RETAINED_CONNECTOR_RUNS + 2;
+    const state = await appendRunsToState(runCount);
     const retainedRunIds = (state.runs ?? []).map((run) => run.runId);
 
-    expect(retainedRunIds).toHaveLength(DEFAULT_SLICE_WALK_MAX_SLICES);
+    expect(retainedRunIds).toHaveLength(RETAINED_CONNECTOR_RUNS);
     expect(retainedRunIds).toEqual(
-      Array.from({ length: DEFAULT_SLICE_WALK_MAX_SLICES }, (_unused, index) =>
-        formatSliceRunId(sliceCount - index),
+      Array.from({ length: RETAINED_CONNECTOR_RUNS }, (_, index) =>
+        formatSliceRunId(runCount - index),
       ),
     );
     expect(retainedRunIds).not.toContain(formatSliceRunId(1));
     expect(retainedRunIds).not.toContain(formatSliceRunId(2));
+  });
+
+  test("keeps the retained window at least as wide as the Slice Walker's ceiling", async () => {
+    const { RETAINED_CONNECTOR_RUNS } = await import("../src/connectors/io.ts");
+    const { SLICE_WALK_SANITY_CEILING } =
+      await import("../src/connectors/slice-walker.ts");
+
+    // The window is sized from the walk ceiling, but the two are tuned for
+    // different pressures (state.json size vs. runaway walks), so they are
+    // separate constants. This pins the coupling that matters: lowering either
+    // one below the other silently re-opens the eviction bug.
+    expect(RETAINED_CONNECTOR_RUNS).toBeGreaterThanOrEqual(
+      SLICE_WALK_SANITY_CEILING,
+    );
   });
 });
