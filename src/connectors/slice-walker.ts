@@ -1,6 +1,14 @@
 const HOUR_MILLISECONDS = 60 * 60 * 1_000;
 const DAY_MILLISECONDS = 24 * HOUR_MILLISECONDS;
 
+/**
+ * Sanity ceiling on how many date slices one Backfill's walk may cover before
+ * the Slice Walker refuses to continue. At the default 30-day slice this is
+ * roughly 32 years of history, so it bounds a runaway walk without trimming a
+ * realistic one. Connector-level `backfill.maxSlices` config overrides it.
+ */
+export const DEFAULT_SLICE_WALK_MAX_SLICES = 400;
+
 export type SliceWalkConfig = {
   boundaryBufferHours: number;
   emptySliceLimit: number;
