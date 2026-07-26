@@ -1327,6 +1327,11 @@ describe("Glean connector", () => {
   });
 
   test("deduplicates every stream across immediately repeated runs", async () => {
+    // The calendar fixture below uses absolute dates, and the connector filters
+    // busy events against a window centred on `fetchedAt`. Pin the clock so the
+    // event stays in-window forever instead of ageing out into `skipped`.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00.000Z"));
     await writeGleanConfig({ enabled: true, instance: "acme" });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     const transport = {
