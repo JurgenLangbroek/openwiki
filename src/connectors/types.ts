@@ -26,8 +26,8 @@ export type ConnectorDefinition = {
   description: string;
   displayName: string;
   id: ConnectorId;
-  posture: ConnectorPosture;
   requiredEnv: string[];
+  supportsAgenticDiscovery: boolean;
 };
 
 export type ConnectorIngestOptions = {
@@ -52,6 +52,12 @@ export type ConnectorIngestResult = {
   warnings: string[];
 };
 
+/**
+ * What a connector source module returns: the definition plus its callable
+ * surface. Deliberately carries no Connector Posture — posture is a fork
+ * concept, so requiring it here would force every upstream connector source to
+ * be edited (see `PosturedConnectorRuntime` and ADR-0004).
+ */
 export type ConnectorRuntime = ConnectorDefinition & {
   backfill?: (
     options?: ConnectorIngestOptions,
@@ -60,6 +66,16 @@ export type ConnectorRuntime = ConnectorDefinition & {
   ingest: (options?: ConnectorIngestOptions) => Promise<ConnectorIngestResult>;
   mcpEndpoints?: McpEndpointId[];
   resolveMcpConfig?: (endpoint?: McpEndpointId) => Promise<McpConnectorConfig>;
+};
+
+/**
+ * A connector runtime with its Connector Posture resolved from the fork-owned
+ * table in `posture.ts` and stamped on by the registry. Everything downstream
+ * of the registry — Ingestion, Backfill, Exploration, live-tool assembly —
+ * reads posture as a plain value and never looks it up by id.
+ */
+export type PosturedConnectorRuntime = ConnectorRuntime & {
+  posture: ConnectorPosture;
 };
 
 export type ConnectorRetentionConfig = {

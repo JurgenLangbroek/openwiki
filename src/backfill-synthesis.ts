@@ -19,7 +19,7 @@ import type { RunLedgerEscalationEvent } from "./connectors/run-ledger.js";
 import type {
   ConnectorIngestResult,
   ConnectorRunSummary,
-  ConnectorRuntime,
+  PosturedConnectorRuntime,
 } from "./connectors/types.js";
 import { createSourceSynthesisPolicy } from "./ingestion.js";
 import { createEscalationSection } from "./live-tools-section.js";
@@ -200,7 +200,7 @@ export async function runBackfillSynthesis({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   emit?: (event: OpenWikiRunEvent) => void;
   onEscalation?: (event: RunLedgerEscalationEvent) => void;
   pull: ConnectorIngestResult;
@@ -337,7 +337,7 @@ export function createBackfillSynthesisMessage({
   chunkCount: number;
   chunkFilePath: string;
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   sourceConfig: OnboardingSourceInstanceConfig;
   synthesisOrder?: BackfillSynthesisOrder;
 }): string {

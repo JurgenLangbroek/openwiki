@@ -1,3 +1,4 @@
+import { stampConnectorPostures } from "./posture.js";
 import { createGitRepoConnector } from "./sources/git-repo.js";
 import { createGleanConnector } from "./sources/glean.js";
 import { createGmailConnector } from "./sources/gmail.js";
@@ -6,7 +7,7 @@ import { createMcpConnector } from "./sources/mcp.js";
 import { createSlackConnector } from "./sources/slack.js";
 import { createWebSearchConnector } from "./sources/web-search.js";
 import { createXConnector } from "./sources/x.js";
-import type { ConnectorId, ConnectorRuntime } from "./types.js";
+import type { ConnectorId, PosturedConnectorRuntime } from "./types.js";
 
 export const CONNECTOR_IDS = [
   "git-repo",
@@ -19,10 +20,10 @@ export const CONNECTOR_IDS = [
   "slack",
 ] as const satisfies readonly ConnectorId[];
 
-export type ConnectorRegistry = Record<ConnectorId, ConnectorRuntime>;
+export type ConnectorRegistry = Record<ConnectorId, PosturedConnectorRuntime>;
 
 export function createConnectorRegistry(): ConnectorRegistry {
-  return {
+  return stampConnectorPostures({
     "git-repo": createGitRepoConnector(),
     glean: createGleanConnector(),
     google: createGmailConnector(),
@@ -37,7 +38,7 @@ export function createConnectorRegistry(): ConnectorRegistry {
     slack: createSlackConnector(),
     "web-search": createWebSearchConnector(),
     x: createXConnector(),
-  };
+  });
 }
 
 export function isConnectorId(value: string): value is ConnectorId {

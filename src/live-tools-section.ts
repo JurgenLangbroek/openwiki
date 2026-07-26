@@ -1,12 +1,12 @@
 import type {
   ConnectorIngestResult,
-  ConnectorRuntime,
+  PosturedConnectorRuntime,
 } from "./connectors/types.js";
 
 const MAX_TOOL_DESCRIPTION_LENGTH = 140;
 
 export function createEscalationSection(
-  connector: ConnectorRuntime,
+  connector: PosturedConnectorRuntime,
   mode: "exploration" | "ingestion" | "synthesis",
 ): string {
   if (
@@ -31,7 +31,7 @@ Escalation — index first, gateway on insufficiency:
 }
 
 export function createLiveToolsSection(
-  connector: ConnectorRuntime,
+  connector: PosturedConnectorRuntime,
   result: ConnectorIngestResult,
   mode: "exploration" | "ingestion",
 ): string {
