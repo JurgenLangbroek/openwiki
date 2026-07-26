@@ -27,6 +27,7 @@ import {
   isConnectorId,
 } from "../src/connectors/registry.ts";
 import { writeConnectorState } from "../src/connectors/io.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 const GLEAN_ENV_KEYS = [
   "OPENWIKI_GLEAN_ACCESS_TOKEN",
@@ -77,7 +78,11 @@ function parseJsonObject(text: string): Record<string, unknown> {
 
 beforeEach(async () => {
   openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-glean-"));
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
   for (const key of GLEAN_ENV_KEYS) {
     delete process.env[key];
   }

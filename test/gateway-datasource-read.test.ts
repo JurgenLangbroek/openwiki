@@ -17,6 +17,7 @@ import {
   type ConnectorRegistry,
 } from "../src/connectors/registry.ts";
 import type { McpEndpointId } from "../src/connectors/types.ts";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 const originalHome = process.env.OPENWIKI_HOME;
 let openWikiHome: string;
@@ -25,7 +26,11 @@ beforeEach(async () => {
   openWikiHome = await mkdtemp(
     path.join(tmpdir(), "openwiki-gateway-datasource-"),
   );
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
 });
 
 afterEach(async () => {

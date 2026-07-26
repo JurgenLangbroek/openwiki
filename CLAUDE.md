@@ -42,14 +42,14 @@ Execution flow: `src/commands.ts` parses argv → `src/cli.tsx` (Ink app) drives
 
 - **User-visible semantics are split** across `src/commands.ts`, `src/cli.tsx`, and `src/agent/*`. When changing CLI behavior, verify both the parser and the agent prompt/runtime.
 - **Providers are centralized in `src/constants.ts`** (`PROVIDER_CONFIGS`, `OpenWikiProvider`, env key names, model lists). Adding or changing a provider also means updating the model-creation branch in `src/agent/index.ts`.
-- **OpenWiki home tree** (`~/.openwiki`: `wiki/`, `connectors/`, `skills/`, `.env`, sqlite checkpoint) is resolved by lazy accessors in `src/openwiki-home.ts`, overridable via the `OPENWIKI_HOME` env var. Always call the accessors at use time — never capture a home-derived path in a module-level constant, or the override (used by tests) breaks.
+- **OpenWiki home tree** (`~/.openwiki`: `wiki/`, `connectors/`, `skills/`, `.env`, sqlite checkpoint) is exported from `src/openwiki-home.ts` under upstream's constant names (`openWikiHomeDir`, `openWikiConnectorsDir`, `openWikiLocalWikiDir`, `openWikiSkillsDir`, `openWikiEnvDir`, `openWikiEnvPath` — the last two re-exported from `src/env.ts`), overridable via the `OPENWIKI_HOME` env var. They are `export let` resolved at module load, so importers see the current value through the ESM live binding: read the imported name at use time and never copy one into a module-level constant, or the override (used by tests) breaks. See `docs/adr/0004-fork-local-behavior-attaches-at-seams.md`.
 - **Credentials** live in `$OPENWIKI_HOME/.env`, managed by `src/env.ts`. `MANAGED_ENV_KEYS` there is the single source of truth for every env var OpenWiki reads or persists; diagnostics and debug key lists derive from it. The interactive setup wizard is `src/credentials.tsx`.
 - **Connectors**: `src/connectors/registry.ts` + one module per source in `src/connectors/sources/`. All connector IO goes through `src/connectors/io.ts` and lands under `$OPENWIKI_HOME/connectors/<id>/` (`config.json`, `state.json`, `raw/<run-id>/`). The agent reaches connectors only through the constrained tools in `src/connectors/tools.ts`; ingestion runs are orchestrated by `src/ingestion.ts`. To add a connector, follow the skill in `src/connectors/write-connector-skill.ts`.
 - **Scheduling**: `src/schedules.ts` installs macOS launchd agents for recurring ingestion; `examples/` holds the GitHub Actions / GitLab CI templates for scheduled doc updates.
 
 ## Tests
 
-Vitest, in `test/*.test.ts`. Tests that need an isolated home point `OPENWIKI_HOME` at a temp dir (see `test/openwiki-home.test.ts`); prefer that over stubbing `HOME` and resetting modules.
+Vitest, in `test/*.test.ts`. Tests that need an isolated home point `OPENWIKI_HOME` at a temp dir (see `test/openwiki-home.test.ts`); prefer that over stubbing `HOME` and resetting modules. Because the home paths resolve at module load, any test that sets `OPENWIKI_HOME` after importing the code under test **must** call `resetOpenWikiHomePaths()` — otherwise it silently reads and writes the developer's real `~/.openwiki`.
 
 ## Fork status
 

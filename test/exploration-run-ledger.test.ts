@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
 
 const mocks = vi.hoisted(() => ({
   discoverLiveTools: vi.fn(),
@@ -48,7 +49,11 @@ beforeEach(async () => {
   openWikiHome = await mkdtemp(
     path.join(tmpdir(), "openwiki-exploration-run-"),
   );
+  // The modules under test are imported statically, so their home paths were
+  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
+  // temp home, or this file reads and writes the developer's real ~/.openwiki.
   process.env.OPENWIKI_HOME = openWikiHome;
+  resetOpenWikiHomePaths();
   mocks.readConfig.mockResolvedValue({
     sourceInstances: [
       {

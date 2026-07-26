@@ -1,5 +1,4 @@
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
-import path from "node:path";
 import {
   ANTHROPIC_API_KEY_ENV_KEY,
   ANTHROPIC_BASE_URL_ENV_KEY,
@@ -49,15 +48,16 @@ import {
   resolveProviderRetryAttempts,
 } from "./constants.js";
 import { isFileNotFoundError } from "./fs-errors.js";
-import { getOpenWikiHomeDir } from "./openwiki-home.js";
+import { openWikiEnvDir, openWikiEnvPath } from "./openwiki-home.js";
 
-export function getOpenWikiEnvDir(): string {
-  return getOpenWikiHomeDir();
-}
-
-export function getOpenWikiEnvPath(): string {
-  return path.join(getOpenWikiEnvDir(), ".env");
-}
+// Upstream declares these two here as module-level consts off `os.homedir()`.
+// The fork needs them to follow the OPENWIKI_HOME override, so they are owned by
+// `openwiki-home.ts` — one owner, one `resetOpenWikiHomePaths()` — and re-exported
+// under upstream's names, which keeps every importer (and upstream's own edits to
+// this file) untouched. Re-exporting an imported binding keeps it live, so a
+// reset is visible through `./env.js` too.
+// See docs/adr/0004-fork-local-behavior-attaches-at-seams.md.
+export { openWikiEnvDir, openWikiEnvPath };
 
 type EnvMap = Record<string, string>;
 
@@ -208,19 +208,17 @@ export async function saveOpenWikiEnv(updates: EnvMap): Promise<void> {
     delete nextEnv[key];
   }
 
-  const envDir = getOpenWikiEnvDir();
-  const envPath = getOpenWikiEnvPath();
-  await mkdir(envDir, {
+  await mkdir(openWikiEnvDir, {
     recursive: true,
     mode: 0o700,
   });
-  await chmod(envDir, 0o700);
+  await chmod(openWikiEnvDir, 0o700);
 
-  await writeFile(envPath, formatEnv(nextEnv), {
+  await writeFile(openWikiEnvPath, formatEnv(nextEnv), {
     encoding: "utf8",
     mode: 0o600,
   });
-  await chmod(envPath, 0o600);
+  await chmod(openWikiEnvPath, 0o600);
 
   for (const [key, value] of Object.entries(updates)) {
     process.env[key] = value;
@@ -345,7 +343,7 @@ function getRetryAttemptsWarnings(value: string): string[] {
 
 async function readOpenWikiEnv(): Promise<EnvMap> {
   try {
-    return parseEnv(await readFile(getOpenWikiEnvPath(), "utf8"));
+    return parseEnv(await readFile(openWikiEnvPath, "utf8"));
   } catch (error) {
     if (isFileNotFoundError(error)) {
       return {};

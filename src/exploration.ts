@@ -36,7 +36,7 @@ import {
 import {
   ensureOpenWikiHome,
   getConnectorConfigPath,
-  getOpenWikiLocalWikiDir,
+  openWikiLocalWikiDir,
 } from "./openwiki-home.js";
 import {
   createRunLedgerEscalationRecorder,
@@ -278,7 +278,7 @@ async function runSourceExploration({
       };
     }
 
-    const wikiDir = getOpenWikiLocalWikiDir();
+    const wikiDir = openWikiLocalWikiDir;
     const agentResult = await runOpenWikiAgent("update", wikiDir, {
       isFollowup: false,
       modelId,

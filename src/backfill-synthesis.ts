@@ -27,7 +27,7 @@ import type {
   OnboardingSourceInstanceConfig,
   OpenWikiOnboardingConfig,
 } from "./onboarding.js";
-import { getOpenWikiLocalWikiDir } from "./openwiki-home.js";
+import { openWikiLocalWikiDir } from "./openwiki-home.js";
 
 export type BackfillSynthesisSummary = {
   chunkCount: number;
@@ -272,7 +272,7 @@ export async function runBackfillSynthesis({
     (count, chunk) => count + chunk.items.length,
     0,
   );
-  const cwd = getOpenWikiLocalWikiDir();
+  const cwd = openWikiLocalWikiDir;
   try {
     for (const chunk of chunks) {
       const chunkFilePath = await writeRawJson(

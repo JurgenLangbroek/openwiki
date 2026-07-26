@@ -2,27 +2,56 @@ import { chmod, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-export function getOpenWikiHomeDir(): string {
+/*
+ * `let`, not `const`, and that is deliberate. Upstream exports these paths as
+ * module-level constants derived from `os.homedir()`, and every upstream module
+ * that needs a home path imports them by these names. This fork adds the
+ * OPENWIKI_HOME override, which earlier replaced them with accessor functions —
+ * and thereby conflicted with every upstream file importing a home path,
+ * including files that did not exist yet. Keeping upstream's names and leaning
+ * on ESM live bindings removes that whole class of conflict: direct importers
+ * read the current value, and `resetOpenWikiHomePaths()` lets a test that moves
+ * OPENWIKI_HOME mid-process re-resolve every derived path.
+ *
+ * Consequence: never copy one of these into a module-level `const` elsewhere —
+ * that snapshots at import time and silently escapes the override.
+ * See docs/adr/0004-fork-local-behavior-attaches-at-seams.md.
+ */
+export let openWikiHomeDir = resolveOpenWikiHomeDir();
+export let openWikiConnectorsDir = path.join(openWikiHomeDir, "connectors");
+export let openWikiLocalWikiDir = path.join(openWikiHomeDir, "wiki");
+export let openWikiSkillsDir = path.join(openWikiHomeDir, "skills");
+export let openWikiEnvDir = openWikiHomeDir;
+export let openWikiEnvPath = path.join(openWikiEnvDir, ".env");
+
+/**
+ * Re-resolve every home-derived path from the current OPENWIKI_HOME.
+ *
+ * Test-only. Production reads the override once, before the CLI launches, so
+ * nothing else ever needs to call this. Any test that changes OPENWIKI_HOME
+ * after this module has loaded — which includes every test file that statically
+ * imports a module reaching the OpenWiki home and then sets OPENWIKI_HOME in a
+ * hook — must call this, or it will read and write the developer's real
+ * `~/.openwiki`.
+ */
+export function resetOpenWikiHomePaths(): void {
+  openWikiHomeDir = resolveOpenWikiHomeDir();
+  openWikiConnectorsDir = path.join(openWikiHomeDir, "connectors");
+  openWikiLocalWikiDir = path.join(openWikiHomeDir, "wiki");
+  openWikiSkillsDir = path.join(openWikiHomeDir, "skills");
+  openWikiEnvDir = openWikiHomeDir;
+  openWikiEnvPath = path.join(openWikiEnvDir, ".env");
+}
+
+function resolveOpenWikiHomeDir(): string {
   const override = process.env.OPENWIKI_HOME?.trim();
   return override
     ? path.resolve(override)
     : path.join(os.homedir(), ".openwiki");
 }
 
-export function getOpenWikiConnectorsDir(): string {
-  return path.join(getOpenWikiHomeDir(), "connectors");
-}
-
-export function getOpenWikiLocalWikiDir(): string {
-  return path.join(getOpenWikiHomeDir(), "wiki");
-}
-
-export function getOpenWikiSkillsDir(): string {
-  return path.join(getOpenWikiHomeDir(), "skills");
-}
-
 export function getConnectorDir(connectorId: string): string {
-  return path.join(getOpenWikiConnectorsDir(), connectorId);
+  return path.join(openWikiConnectorsDir, connectorId);
 }
 
 export function getConnectorConfigPath(connectorId: string): string {
@@ -53,12 +82,11 @@ export function getConnectorLogsDir(connectorId: string): string {
 }
 
 export async function ensureOpenWikiHome(): Promise<void> {
-  const homeDir = getOpenWikiHomeDir();
-  await mkdir(homeDir, { recursive: true, mode: 0o700 });
-  await chmodIfExists(homeDir, 0o700);
-  await mkdir(getOpenWikiConnectorsDir(), { recursive: true, mode: 0o700 });
-  await mkdir(getOpenWikiLocalWikiDir(), { recursive: true, mode: 0o700 });
-  await mkdir(getOpenWikiSkillsDir(), { recursive: true, mode: 0o700 });
+  await mkdir(openWikiHomeDir, { recursive: true, mode: 0o700 });
+  await chmodIfExists(openWikiHomeDir, 0o700);
+  await mkdir(openWikiConnectorsDir, { recursive: true, mode: 0o700 });
+  await mkdir(openWikiLocalWikiDir, { recursive: true, mode: 0o700 });
+  await mkdir(openWikiSkillsDir, { recursive: true, mode: 0o700 });
 }
 
 export async function ensureConnectorHome(connectorId: string): Promise<void> {

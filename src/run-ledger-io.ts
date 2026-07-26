@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getOpenWikiLocalWikiDir } from "./openwiki-home.js";
+import { openWikiLocalWikiDir } from "./openwiki-home.js";
 import {
   createNoWatermarkEvent,
   type RunLedger,
@@ -99,7 +99,7 @@ export async function writeRunLedgerBestEffort({
 
 export function getRunLedgerPath(connectorId: string): string {
   return path.join(
-    getOpenWikiLocalWikiDir(),
+    openWikiLocalWikiDir,
     "sources",
     `${connectorId}-run-ledger.md`,
   );
