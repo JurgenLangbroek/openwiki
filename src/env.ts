@@ -171,11 +171,25 @@ const deprecatedEnvKeys = [
   "OPENAI_PROJECT",
 ];
 
+/**
+ * Keys that never travel through `$OPENWIKI_HOME/.env`, in either direction.
+ *
+ * `OPENWIKI_HOME` selects *which* `.env` is read, so a copy of it stored inside
+ * that file is self-referential: honouring it would relocate the home based on a
+ * file read out of the home it is relocating away from, and would leave
+ * `process.env.OPENWIKI_HOME` disagreeing with the already-resolved path
+ * bindings until someone called `resetOpenWikiHomePaths()`. It is a
+ * process-environment-only setting, which is why it is deliberately absent from
+ * {@link MANAGED_ENV_KEYS}.
+ * See docs/adr/0004-fork-local-behavior-attaches-at-seams.md.
+ */
+const ENV_FILE_EXCLUDED_KEYS = new Set<string>(["OPENWIKI_HOME"]);
+
 export async function loadOpenWikiEnv(): Promise<EnvMap> {
   const env = await readOpenWikiEnv();
 
   for (const [key, value] of Object.entries(env)) {
-    if (deprecatedEnvKeys.includes(key)) {
+    if (ENV_FILE_EXCLUDED_KEYS.has(key) || deprecatedEnvKeys.includes(key)) {
       continue;
     }
 
@@ -203,6 +217,10 @@ export async function saveOpenWikiEnv(updates: EnvMap): Promise<void> {
     ...currentEnv,
     ...updates,
   };
+
+  for (const key of ENV_FILE_EXCLUDED_KEYS) {
+    delete nextEnv[key];
+  }
 
   for (const key of deprecatedEnvKeys) {
     delete nextEnv[key];

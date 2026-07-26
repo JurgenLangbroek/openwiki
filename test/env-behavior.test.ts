@@ -84,6 +84,36 @@ afterEach(async () => {
 });
 
 describe("loadOpenWikiEnv", () => {
+  test("never applies an OPENWIKI_HOME line found in the .env file", async () => {
+    // OPENWIKI_HOME selects *which* `.env` is read, so honouring a copy stored
+    // inside that file would relocate the home based on a file read out of the
+    // home it is relocating away from, and would leave process.env disagreeing
+    // with the already-resolved path bindings. The override is deleted here on
+    // purpose: the copy loop only fills keys that are unset, so an ambient
+    // OPENWIKI_HOME would satisfy this test for the wrong reason. The bindings
+    // still point at tempHome throughout — only the process env is unset.
+    await mkdir(path.dirname(openWikiEnvPath), { recursive: true });
+    await writeFile(
+      openWikiEnvPath,
+      [
+        "OPENWIKI_HOME=/somewhere/else",
+        `${OPENAI_API_KEY_ENV_KEY}=sk-kept`,
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    delete process.env.OPENWIKI_HOME;
+
+    const env = await loadOpenWikiEnv();
+
+    // Still parsed and returned — the file is reported faithfully…
+    expect(env.OPENWIKI_HOME).toBe("/somewhere/else");
+    // …but never applied, so the home cannot move underneath the bindings.
+    expect(process.env.OPENWIKI_HOME).toBeUndefined();
+    expect(openWikiEnvPath).toBe(path.join(tempHome, ".env"));
+    // Other keys from the same file still load normally.
+    expect(process.env[OPENAI_API_KEY_ENV_KEY]).toBe("sk-kept");
+  });
+
   test("loads a saved managed key into process.env", async () => {
     await saveOpenWikiEnv({ [OPENROUTER_API_KEY_ENV_KEY]: "sk-or-test" });
 
@@ -155,6 +185,36 @@ describe("saveOpenWikiEnv", () => {
     // Owner read/write only; no group/other bits.
     expect(mode & 0o077).toBe(0);
     expect(mode & 0o600).toBe(0o600);
+  });
+
+  test("never persists OPENWIKI_HOME into the env file", async () => {
+    // The reverse direction of the exclusion: a stale OPENWIKI_HOME already in
+    // the file must not survive a save, and a caller that passes one must not
+    // get it written. Otherwise a later read would hand the home a value out of
+    // the home's own credential file.
+    await mkdir(path.dirname(openWikiEnvPath), { recursive: true });
+    await writeFile(openWikiEnvPath, "OPENWIKI_HOME=/stale/home\n", "utf8");
+
+    await saveOpenWikiEnv({
+      OPENWIKI_HOME: "/somewhere/else",
+      [OPENAI_API_KEY_ENV_KEY]: "sk-kept",
+    });
+
+    const contents = await readFile(openWikiEnvPath, "utf8");
+
+    expect(contents).not.toContain("OPENWIKI_HOME");
+    expect(contents).toContain(`${OPENAI_API_KEY_ENV_KEY}="sk-kept"`);
+    // The write landed in the temp home, not wherever the passed value pointed.
+    expect(openWikiEnvPath).toBe(path.join(tempHome, ".env"));
+
+    // Known residue, pinned rather than hidden: saveOpenWikiEnv's trailing
+    // process.env mirror still reflects whatever the caller passed, so a caller
+    // that passes OPENWIKI_HOME does move process.env even though nothing is
+    // persisted and the bindings stay put. Nothing in OpenWiki passes that key,
+    // and guarding that loop would fork a function body upstream rewrites
+    // wholesale — the one thing this ticket exists to avoid. If someone closes
+    // it, this expectation should fail and be deleted deliberately.
+    expect(process.env.OPENWIKI_HOME).toBe("/somewhere/else");
   });
 
   test("strips deprecated keys from the persisted file", async () => {
