@@ -2,6 +2,10 @@ import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import type {
+  ConnectorRunSummary,
+  ConnectorState,
+} from "../src/connectors/types.ts";
 
 const originalOpenWikiHome = process.env.OPENWIKI_HOME;
 const tempDirs: string[] = [];
@@ -696,5 +700,68 @@ describe("raw connector retention", () => {
     });
     expect(typeof stampedRun?.synthesizedAt).toBe("string");
     expect(await pathExists(rawPath)).toBe(true);
+  });
+});
+
+describe("connector run history retention", () => {
+  function formatSliceRunId(slice: number): string {
+    return `2026-07-13T00-00-00-${String(slice).padStart(3, "0")}Z`;
+  }
+
+  function createSliceRun(slice: number): ConnectorRunSummary {
+    return {
+      at: `2026-07-13T00:00:00.${String(slice).padStart(3, "0")}Z`,
+      rawFiles: [`backfill-slice-${String(slice).padStart(4, "0")}.json`],
+      runId: formatSliceRunId(slice),
+      status: "success",
+      warnings: [],
+    };
+  }
+
+  async function walkSlicesIntoState(
+    sliceCount: number,
+  ): Promise<ConnectorState> {
+    const { updateStateWithRun } = await import("../src/connectors/io.ts");
+    let state: ConnectorState = { version: 1 };
+
+    for (let slice = 1; slice <= sliceCount; slice += 1) {
+      state = updateStateWithRun(state, createSliceRun(slice));
+    }
+
+    return state;
+  }
+
+  test("keeps every run of a Backfill that walks the Slice Walker's per-walk ceiling", async () => {
+    const { DEFAULT_SLICE_WALK_MAX_SLICES } =
+      await import("../src/connectors/slice-walker.ts");
+    const state = await walkSlicesIntoState(DEFAULT_SLICE_WALK_MAX_SLICES);
+
+    // A resumed Backfill appends one run summary per invocation, so a walk
+    // interrupted after every slice costs one run summary per slice walked.
+    expect(state.runs).toHaveLength(DEFAULT_SLICE_WALK_MAX_SLICES);
+    expect(state.runs?.[0]?.runId).toBe(
+      formatSliceRunId(DEFAULT_SLICE_WALK_MAX_SLICES),
+    );
+    expect(state.runs?.at(-1)?.runId).toBe(formatSliceRunId(1));
+    expect(state.lastRunAt).toBe(
+      createSliceRun(DEFAULT_SLICE_WALK_MAX_SLICES).at,
+    );
+  });
+
+  test("evicts oldest-first once run history overflows the retained window", async () => {
+    const { DEFAULT_SLICE_WALK_MAX_SLICES } =
+      await import("../src/connectors/slice-walker.ts");
+    const sliceCount = DEFAULT_SLICE_WALK_MAX_SLICES + 2;
+    const state = await walkSlicesIntoState(sliceCount);
+    const retainedRunIds = (state.runs ?? []).map((run) => run.runId);
+
+    expect(retainedRunIds).toHaveLength(DEFAULT_SLICE_WALK_MAX_SLICES);
+    expect(retainedRunIds).toEqual(
+      Array.from({ length: DEFAULT_SLICE_WALK_MAX_SLICES }, (_unused, index) =>
+        formatSliceRunId(sliceCount - index),
+      ),
+    );
+    expect(retainedRunIds).not.toContain(formatSliceRunId(1));
+    expect(retainedRunIds).not.toContain(formatSliceRunId(2));
   });
 });

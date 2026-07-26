@@ -20,6 +20,7 @@ import { annotateToolsWithPolicy } from "../tool-policy.js";
 import { writeToolCatalog } from "../tool-catalog.js";
 import {
   beginSliceWalk,
+  DEFAULT_SLICE_WALK_MAX_SLICES,
   planNextSlice,
   recordSlice,
   type SliceWalkConfig,
@@ -120,7 +121,7 @@ const GLEAN_STATE_PATH = "~/.openwiki/connectors/glean/state.json";
 const DEFAULT_BACKFILL_CONFIG: SliceWalkConfig = {
   boundaryBufferHours: 24,
   emptySliceLimit: 3,
-  maxSlices: 400,
+  maxSlices: DEFAULT_SLICE_WALK_MAX_SLICES,
   sliceDays: 30,
 };
 const DEFAULT_GLEAN_REQUESTS_PER_SECOND = 4;

@@ -6,7 +6,28 @@ import {
   getConnectorRawDir,
   getConnectorStatePath,
 } from "../openwiki-home.js";
+import { DEFAULT_SLICE_WALK_MAX_SLICES } from "./slice-walker.js";
 import type { ConnectorId, ConnectorState } from "./types.js";
+
+/**
+ * How many run summaries a connector's state keeps, newest first.
+ *
+ * Derived from the Backfill, which is the only thing that produces run
+ * summaries in bulk: each Backfill invocation appends exactly one summary, and
+ * a walk that is interrupted and resumed — a 429 pacing trip, an expired token,
+ * a killed process — needs one invocation per remaining slice in the worst
+ * case. The Slice Walker refuses to walk past `DEFAULT_SLICE_WALK_MAX_SLICES`
+ * slices in a single walk, so that ceiling is also the largest number of run
+ * summaries one complete Backfill can cost. Retaining exactly that many
+ * guarantees a Backfill never evicts the record of its own earlier slices, and
+ * keeps every run reachable for the raw-retention sweep, which can only delete
+ * (and un-orphan) raw directories belonging to runs still listed in state.
+ *
+ * A connector that raises `backfill.maxSlices` past the default ceiling walks
+ * further than this window provably covers; the Run Ledger stays the durable
+ * human-readable record in that case.
+ */
+export const RETAINED_CONNECTOR_RUNS = DEFAULT_SLICE_WALK_MAX_SLICES;
 
 export async function readConnectorConfig<T extends object>(
   connectorId: ConnectorId,
@@ -124,7 +145,7 @@ export function updateStateWithRun(
   return {
     ...state,
     lastRunAt: run.at,
-    runs: [run, ...(state.runs ?? [])].slice(0, 20),
+    runs: [run, ...(state.runs ?? [])].slice(0, RETAINED_CONNECTOR_RUNS),
     version: 1,
   };
 }
