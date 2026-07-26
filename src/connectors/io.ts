@@ -6,28 +6,54 @@ import {
   getConnectorRawDir,
   getConnectorStatePath,
 } from "../openwiki-home.js";
-import { DEFAULT_SLICE_WALK_MAX_SLICES } from "./slice-walker.js";
 import type { ConnectorId, ConnectorState } from "./types.js";
 
 /**
  * How many run summaries a connector's state keeps, newest first.
  *
- * Derived from the Backfill, which is the only thing that produces run
- * summaries in bulk: each Backfill invocation appends exactly one summary, and
- * a walk that is interrupted and resumed — a 429 pacing trip, an expired token,
- * a killed process — needs one invocation per remaining slice in the worst
- * case. The Slice Walker refuses to walk past `DEFAULT_SLICE_WALK_MAX_SLICES`
- * slices in a single walk, so that ceiling is also the largest number of run
- * summaries one complete Backfill can cost. Retaining exactly that many
- * guarantees a Backfill never evicts the record of its own earlier slices, and
- * keeps every run reachable for the raw-retention sweep, which can only delete
- * (and un-orphan) raw directories belonging to runs still listed in state.
+ * Sized from the Backfill, the only thing that appends run summaries in bulk.
+ * A Backfill invocation appends exactly one summary, and a walk that stops
+ * early continues in a later invocation, so a Backfill costs one summary per
+ * invocation it takes to finish its walk. The Slice Walker refuses to advance
+ * past `SLICE_WALK_SANITY_CEILING` slices, which caps the slices a walk can
+ * cover; an interrupted walk whose every invocation advances at least one
+ * slice therefore fits in a window of that size. This number matches that
+ * ceiling — it is that measurement, not a round guess.
  *
- * A connector that raises `backfill.maxSlices` past the default ceiling walks
- * further than this window provably covers; the Run Ledger stays the durable
- * human-readable record in that case.
+ * That makes the window headroom, **not** a proof, and no finite window closes
+ * the two holes:
+ *
+ * - **Zero-progress invocations.** Glean's Backfill appends a summary and
+ *   returns *without* advancing the walk when a stream fetch rejects (a 429
+ *   past the rate gate's attempts, an expired token), and the
+ *   Content-Expansion total-failure tripwire deliberately rewinds the walk to
+ *   before the failing streak. A persistently failing backend can burn
+ *   summaries without walking slices, and the sanity ceiling does not fire
+ *   because it counts slices, not invocations.
+ * - **A shared window.** This is the single append point for *every* connector
+ *   run: tool probes, ordinary window Pulls, and Backfill invocations, across
+ *   all connectors. A Backfill spread over days competes for the window with
+ *   the scheduled Pulls running beside it.
+ *
+ * A hard guarantee would need a rule specific to Backfill runs — never
+ * evicting a run whose raw data is still unswept, say — which is a larger
+ * change than a window size. Deliberately not done here.
+ *
+ * Two consequences of widening the window, both intended:
+ *
+ * - Raw retention improves. `sweepConnectorRawRetention` only sees runs still
+ *   listed here, so an evicted run's `raw/<run-id>/` directory can never be
+ *   swept; fewer evictions means fewer orphaned directories.
+ * - Backfill synthesis recovers more. `runBackfillSynthesis` re-reads every
+ *   prior unsynthesized run's `rawFiles`; eviction previously capped that
+ *   recovery set near 20 and now caps it near this window. Recovering stalled
+ *   runs is the point, but the set deserves a bound of its own rather than one
+ *   inherited from run eviction.
+ *
+ * Keep this at or above `SLICE_WALK_SANITY_CEILING`; `test/retention.test.ts`
+ * pins that relationship.
  */
-export const RETAINED_CONNECTOR_RUNS = DEFAULT_SLICE_WALK_MAX_SLICES;
+export const RETAINED_CONNECTOR_RUNS = 400;
 
 export async function readConnectorConfig<T extends object>(
   connectorId: ConnectorId,
