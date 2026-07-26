@@ -38,6 +38,7 @@ OpenWiki connectors are built-in TypeScript modules in the OSS repository. Do no
 - Implement the connector under src/connectors/sources/<connector>.ts.
 - The connector must expose a ConnectorRuntime with id, displayName, description, backend, supportsAgenticDiscovery, requiredEnv, and ingest().
 - Declare the connector's posture in the table in src/connectors/posture.ts; the registry stamps it onto the runtime. The table is exhaustive, so a new connector id does not compile until its posture is declared.
+- Posture is the live axis: it decides deterministic pull versus agentic exploration. supportsAgenticDiscovery is a required field nothing here reads; set it, but never wire a decision to it.
 - Ingestion writes raw JSON/manifests under ~/.openwiki/connectors/<id>/raw/<run-id>/.
 - State lives in ~/.openwiki/connectors/<id>/state.json.
 - Config lives in ~/.openwiki/connectors/<id>/config.json.
