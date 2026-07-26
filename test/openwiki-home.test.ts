@@ -83,7 +83,7 @@ describe("OPENWIKI_HOME", () => {
     // FILES_ALLOWED_TO_SEE_THE_REAL_HOME allowlist. Everything in here is a
     // string comparison; do NOT add an assertion that performs IO, or it writes
     // into the developer's actual home.
-    withRealHomeDirForFallbackAssertions((realHomeDir) => {
+    withRealHomeDirForFallbackAssertions(import.meta.url, (realHomeDir) => {
       const defaultHome = path.join(realHomeDir, ".openwiki");
 
       delete process.env.OPENWIKI_HOME;
@@ -135,7 +135,7 @@ describe("OPENWIKI_HOME", () => {
     // the callback, with the override deleted, the bindings point at the
     // developer's REAL `~/.openwiki/.env`. String comparison only — never add
     // IO here. The override is restored a few lines down.
-    withRealHomeDirForFallbackAssertions((realHomeDir) => {
+    withRealHomeDirForFallbackAssertions(import.meta.url, (realHomeDir) => {
       delete process.env.OPENWIKI_HOME;
       resetOpenWikiHomePaths();
       expect(env.openWikiEnvPath).toBe(
