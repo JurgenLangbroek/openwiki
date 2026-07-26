@@ -1,8 +1,7 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
+import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
 const mocks = vi.hoisted(() => ({
   gleanBackfill: vi.fn(),
@@ -61,12 +60,7 @@ let openWikiHome: string;
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  openWikiHome = await mkdtemp(path.join(tmpdir(), "openwiki-backfill-run-"));
-  // The modules under test are imported statically, so their home paths were
-  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
-  // temp home, or this file reads and writes the developer's real ~/.openwiki.
-  process.env.OPENWIKI_HOME = openWikiHome;
-  resetOpenWikiHomePaths();
+  openWikiHome = await useTempOpenWikiHome("openwiki-backfill-run-");
   mocks.runAgent.mockResolvedValue({ command: "update", model: "fixture" });
   mocks.readConfig.mockResolvedValue({
     sourceInstances: [

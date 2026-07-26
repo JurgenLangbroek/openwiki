@@ -1,7 +1,9 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
+
+import { withRealHomeDirForFallbackAssertions } from "./support/openwiki-home-guard.ts";
 
 const originalOpenWikiHome = process.env.OPENWIKI_HOME;
 const tempDirs: string[] = [];
@@ -75,23 +77,24 @@ describe("OPENWIKI_HOME", () => {
   test("falls back to ~/.openwiki when unset or blank", async () => {
     const home = await import("../src/openwiki-home.ts");
 
-    const defaultHome = path.join(homedir(), ".openwiki");
+    // ⚠️ Inside this callback the live path bindings aim at the developer's
+    // REAL `~/.openwiki` — that is the fallback being asserted, so it cannot be
+    // avoided here, and it is why this file is the only entry in the guard's
+    // FILES_ALLOWED_TO_SEE_THE_REAL_HOME allowlist. Everything in here is a
+    // string comparison; do NOT add an assertion that performs IO, or it writes
+    // into the developer's actual home.
+    withRealHomeDirForFallbackAssertions((realHomeDir) => {
+      const defaultHome = path.join(realHomeDir, ".openwiki");
 
-    // ⚠️ These two lines aim the live path bindings at the developer's REAL
-    // `~/.openwiki` — that is the fallback being asserted, so it cannot be
-    // avoided here. This test and the one at the bottom of this file are the
-    // only places in the suite that do it. Everything below is a string
-    // comparison; do NOT add an assertion that performs IO after this point, or
-    // it writes into the developer's actual home. Point OPENWIKI_HOME at a temp
-    // dir and reset again first.
-    delete process.env.OPENWIKI_HOME;
-    home.resetOpenWikiHomePaths();
-    expect(home.openWikiHomeDir).toBe(defaultHome);
-    expect(home.openWikiLocalWikiDir).toBe(path.join(defaultHome, "wiki"));
+      delete process.env.OPENWIKI_HOME;
+      home.resetOpenWikiHomePaths();
+      expect(home.openWikiHomeDir).toBe(defaultHome);
+      expect(home.openWikiLocalWikiDir).toBe(path.join(defaultHome, "wiki"));
 
-    process.env.OPENWIKI_HOME = "   ";
-    home.resetOpenWikiHomePaths();
-    expect(home.openWikiHomeDir).toBe(defaultHome);
+      process.env.OPENWIKI_HOME = "   ";
+      home.resetOpenWikiHomePaths();
+      expect(home.openWikiHomeDir).toBe(defaultHome);
+    });
   });
 
   test("resetOpenWikiHomePaths re-resolves every derived path", async () => {
@@ -128,13 +131,17 @@ describe("OPENWIKI_HOME", () => {
     const env = await import("../src/env.ts");
     const { resetOpenWikiHomePaths } = await import("../src/openwiki-home.ts");
 
-    // ⚠️ Same hazard as "falls back to ~/.openwiki when unset or blank": with the
-    // override deleted, the bindings point at the developer's REAL
-    // `~/.openwiki/.env`. String comparison only — never add IO here. The
-    // override is restored two lines down before anything else happens.
-    delete process.env.OPENWIKI_HOME;
-    resetOpenWikiHomePaths();
-    expect(env.openWikiEnvPath).toBe(path.join(homedir(), ".openwiki", ".env"));
+    // ⚠️ Same hazard as "falls back to ~/.openwiki when unset or blank": inside
+    // the callback, with the override deleted, the bindings point at the
+    // developer's REAL `~/.openwiki/.env`. String comparison only — never add
+    // IO here. The override is restored a few lines down.
+    withRealHomeDirForFallbackAssertions((realHomeDir) => {
+      delete process.env.OPENWIKI_HOME;
+      resetOpenWikiHomePaths();
+      expect(env.openWikiEnvPath).toBe(
+        path.join(realHomeDir, ".openwiki", ".env"),
+      );
+    });
 
     const openWikiHome = await createTempDir();
     process.env.OPENWIKI_HOME = openWikiHome;

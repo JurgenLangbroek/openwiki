@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -17,20 +16,13 @@ import {
   type ConnectorRegistry,
 } from "../src/connectors/registry.ts";
 import type { McpEndpointId } from "../src/connectors/types.ts";
-import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
+import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
 const originalHome = process.env.OPENWIKI_HOME;
 let openWikiHome: string;
 
 beforeEach(async () => {
-  openWikiHome = await mkdtemp(
-    path.join(tmpdir(), "openwiki-gateway-datasource-"),
-  );
-  // The modules under test are imported statically, so their home paths were
-  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
-  // temp home, or this file reads and writes the developer's real ~/.openwiki.
-  process.env.OPENWIKI_HOME = openWikiHome;
-  resetOpenWikiHomePaths();
+  openWikiHome = await useTempOpenWikiHome("openwiki-gateway-datasource-");
 });
 
 afterEach(async () => {
