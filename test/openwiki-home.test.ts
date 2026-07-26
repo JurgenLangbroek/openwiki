@@ -77,6 +77,13 @@ describe("OPENWIKI_HOME", () => {
 
     const defaultHome = path.join(homedir(), ".openwiki");
 
+    // ⚠️ These two lines aim the live path bindings at the developer's REAL
+    // `~/.openwiki` — that is the fallback being asserted, so it cannot be
+    // avoided here. This test and the one at the bottom of this file are the
+    // only places in the suite that do it. Everything below is a string
+    // comparison; do NOT add an assertion that performs IO after this point, or
+    // it writes into the developer's actual home. Point OPENWIKI_HOME at a temp
+    // dir and reset again first.
     delete process.env.OPENWIKI_HOME;
     home.resetOpenWikiHomePaths();
     expect(home.openWikiHomeDir).toBe(defaultHome);
@@ -121,6 +128,10 @@ describe("OPENWIKI_HOME", () => {
     const env = await import("../src/env.ts");
     const { resetOpenWikiHomePaths } = await import("../src/openwiki-home.ts");
 
+    // ⚠️ Same hazard as "falls back to ~/.openwiki when unset or blank": with the
+    // override deleted, the bindings point at the developer's REAL
+    // `~/.openwiki/.env`. String comparison only — never add IO here. The
+    // override is restored two lines down before anything else happens.
     delete process.env.OPENWIKI_HOME;
     resetOpenWikiHomePaths();
     expect(env.openWikiEnvPath).toBe(path.join(homedir(), ".openwiki", ".env"));
