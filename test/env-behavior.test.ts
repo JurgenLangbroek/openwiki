@@ -1,12 +1,4 @@
-import {
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-  mkdir,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
@@ -23,7 +15,7 @@ import {
   OPENWIKI_MODEL_ID_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
 } from "../src/constants.ts";
-import { resetOpenWikiHomePaths } from "../src/openwiki-home.ts";
+import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
 // `loadOpenWikiEnv`, `saveOpenWikiEnv`, and `getCredentialDiagnostics` all read
 // from / write to the `.env` file under the OpenWiki home. Pointing
@@ -49,12 +41,7 @@ let tempHome: string;
 
 beforeEach(async () => {
   originalHome = process.env.OPENWIKI_HOME;
-  tempHome = await mkdtemp(path.join(tmpdir(), "openwiki-env-behavior-"));
-  // The modules under test are imported statically, so their home paths were
-  // already resolved from the ambient OPENWIKI_HOME. Re-resolve them against the
-  // temp home, or this file reads and writes the developer's real ~/.openwiki.
-  process.env.OPENWIKI_HOME = tempHome;
-  resetOpenWikiHomePaths();
+  tempHome = await useTempOpenWikiHome("openwiki-env-behavior-");
 
   // Assert the isolation rather than trusting it. Every other test file that
   // reaches the OpenWiki home fails loudly if its reset is dropped, because its
