@@ -8,7 +8,7 @@ import { createConnectorRegistry } from "./connectors/registry.js";
 import type {
   ConnectorId,
   ConnectorIngestResult,
-  ConnectorRuntime,
+  PosturedConnectorRuntime,
 } from "./connectors/types.js";
 import { loadOpenWikiEnv } from "./env.js";
 import {
@@ -89,7 +89,7 @@ async function runSourceBackfill({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   emit?: (event: OpenWikiRunEvent) => void;
   sourceConfig: OnboardingSourceInstanceConfig;
 }): Promise<SourceBackfillResult> {
@@ -171,7 +171,7 @@ async function runSourceBackfill({
 }
 
 function createUnsupportedResult(
-  connector: ConnectorRuntime,
+  connector: PosturedConnectorRuntime,
   displayName: string,
 ): ConnectorIngestResult {
   return {

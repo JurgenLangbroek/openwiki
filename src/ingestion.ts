@@ -18,7 +18,7 @@ import type {
   ConnectorId,
   ConnectorIngestResult,
   ConnectorPosture,
-  ConnectorRuntime,
+  PosturedConnectorRuntime,
 } from "./connectors/types.js";
 import { loadOpenWikiEnv } from "./env.js";
 import {
@@ -148,7 +148,7 @@ async function runSourceIngestion({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   cwd: string;
   emit?: (event: OpenWikiRunEvent) => void;
   modelId?: string | null;
@@ -325,7 +325,7 @@ function formatTarget(target: IngestionTarget): string {
 }
 
 function getSourceDisplayName(
-  connector: ConnectorRuntime,
+  connector: PosturedConnectorRuntime,
   sourceConfig: OnboardingSourceInstanceConfig,
 ): string {
   return sourceConfig.name ?? connector.displayName;
@@ -348,7 +348,7 @@ export function createSourceUpdateMessage({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   deterministicPull: ConnectorIngestResult | undefined;
   rawFiles: string[];
   sourceConfig: OnboardingSourceInstanceConfig;

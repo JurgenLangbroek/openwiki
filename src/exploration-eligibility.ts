@@ -1,9 +1,9 @@
 import { createConnectorRegistry } from "./connectors/registry.js";
-import type { ConnectorRuntime } from "./connectors/types.js";
+import type { PosturedConnectorRuntime } from "./connectors/types.js";
 import type { OpenWikiOnboardingConfig } from "./onboarding.js";
 
 export function isExplorableConnector(
-  connector: Pick<ConnectorRuntime, "posture">,
+  connector: Pick<PosturedConnectorRuntime, "posture">,
 ): boolean {
   return connector.posture === "agentic" || connector.posture === "hybrid";
 }

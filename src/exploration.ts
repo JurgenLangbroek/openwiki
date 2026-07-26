@@ -16,7 +16,7 @@ import { sweepAllConnectorRawRetention } from "./connectors/retention.js";
 import type {
   ConnectorId,
   ConnectorIngestResult,
-  ConnectorRuntime,
+  PosturedConnectorRuntime,
 } from "./connectors/types.js";
 import { loadOpenWikiEnv } from "./env.js";
 import { isExplorableConnector } from "./exploration-eligibility.js";
@@ -169,7 +169,7 @@ export function createExplorationMessage({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   discovery: ConnectorIngestResult | undefined;
   sourceConfig: OnboardingSourceInstanceConfig;
 }): string {
@@ -217,7 +217,7 @@ async function runSourceExploration({
   sourceConfig,
 }: {
   config: OpenWikiOnboardingConfig;
-  connector: ConnectorRuntime;
+  connector: PosturedConnectorRuntime;
   cwd: string;
   emit?: (event: OpenWikiRunEvent) => void;
   modelId?: string | null;
@@ -363,7 +363,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getSourceDisplayName(
-  connector: ConnectorRuntime,
+  connector: PosturedConnectorRuntime,
   sourceConfig: OnboardingSourceInstanceConfig,
 ): string {
   return sourceConfig.name ?? connector.displayName;
