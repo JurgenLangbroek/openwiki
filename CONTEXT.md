@@ -14,6 +14,10 @@ The generated documentation set for a single repository, living in that repo's `
 **Connector**:
 A source of evidence for the Brain Wiki. A connector pulls raw items from one system and records them with provenance; it never writes wiki pages itself.
 
+**Connector Posture**:
+The stance a connector takes toward evidence gathering: deterministic (Pull only), agentic (Exploration only), or hybrid (both). Decides whether a connector's live tools are offered to the agent during Synthesis.
+_Avoid_: connector mode (means which wiki a connector serves), agentic discovery
+
 **Ingestion**:
 The two-phase run that updates the Brain Wiki: a connector's deterministic pull of raw items, followed by agent synthesis of those items into wiki pages.
 
@@ -49,6 +53,12 @@ A read executed against the live underlying datasource (Gmail, Jira, Confluence,
 
 **Index Read**:
 A read served from a search intermediary's own index (snippets, cached document content). May lag the live datasource.
+
+**Concept Page**:
+A wiki page carrying front matter that names its type, title, and description, making it addressable as a named concept rather than loose prose. Every page in either wiki is a Concept Page; a Wiki Index is not.
+
+**Wiki Index**:
+The generated listing of the Concept Pages within one wiki directory. Machine-maintained and never authored, so nothing of value can be written into it. Distinct from an Index Read, which reads an external intermediary's index.
 
 **Open Question**:
 An uncertainty recorded in the Brain Wiki that future evidence or exploration is expected to resolve. The set of active open questions doubles as the exploration queue.
