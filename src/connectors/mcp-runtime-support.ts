@@ -1,3 +1,4 @@
+import { isSecretLikeKey } from "../diagnostics.js";
 import {
   readConnectorConfig,
   readConnectorState,
@@ -64,6 +65,17 @@ export async function recordMcpRun(
   );
 }
 
+/**
+ * Redacts secret-bearing keys out of an MCP tool argument or result before it
+ * is persisted under `connectors/<id>/raw/<run-id>/` or written to the
+ * connector log.
+ *
+ * The key predicate is `isSecretLikeKey` from `src/diagnostics.ts` — the single
+ * source of truth shared with the credential diagnostics path and the
+ * OpenRouter body sanitiser. This module used to keep a private, narrower copy
+ * that was missing `bearer` and `user_id`; never reintroduce one. Extend
+ * `SECRET_KEY_PATTERN_SOURCE` instead, and every redaction path follows.
+ */
 export function sanitizeMcpValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sanitizeMcpValue);
@@ -79,19 +91,4 @@ export function sanitizeMcpValue(value: unknown): unknown {
   }
 
   return value;
-}
-
-// #59 — BEHAVIOUR GAP, not duplication. Upstream unified every redaction path
-// on `SECRET_KEY_PATTERN_SOURCE` in `src/diagnostics.ts`; this fork-local copy
-// survived the merge because `src/connectors/mcp-runtime.ts` was resolved to
-// the fork's module split, which dropped upstream's hoist. The two patterns are
-// NOT the same: this one is missing `bearer` and `user_id`, so an MCP tool
-// result with a key of either name is written verbatim into
-// `connectors/<id>/raw/<run-id>/` and the connector log while the same key is
-// redacted elsewhere in the same process.
-//
-// Fix direction matters: import `isSecretLikeKey` from `../diagnostics.js` (the
-// superset) and delete this function. Never the reverse.
-function isSecretLikeKey(key: string): boolean {
-  return /(token|secret|password|authorization|api[-_]?key|cookie)/iu.test(key);
 }

@@ -1632,11 +1632,8 @@ async function readResponseBodyPreview(response: Response): Promise<string> {
 export function sanitizeOpenRouterResponseBody(body: string): string {
   // Redact string values whose JSON key name contains any secret-bearing term
   // (shared source of truth with `isSecretLikeKey` in `src/diagnostics.ts`).
-  //
-  // #59 — the MCP tool-result redactor is NOT yet on this source of truth: it
-  // still uses a narrower private pattern in
-  // `src/connectors/mcp-runtime-support.ts`. Do not read this comment as proof
-  // that the MCP path is covered until that is fixed.
+  // The MCP tool-result redactor in `src/connectors/mcp-runtime-support.ts` is
+  // on that same source of truth, so this claim covers it too.
   const secretJsonKeyPattern = new RegExp(
     `"([^"]*(?:${SECRET_KEY_PATTERN_SOURCE})[^"]*)"\\s*:\\s*"[^"]*"`,
     "giu",

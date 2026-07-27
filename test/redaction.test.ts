@@ -10,6 +10,8 @@ import {
   formatEnvironmentDebugValue,
   sanitizeOpenRouterResponseBody,
 } from "../src/agent/index.ts";
+import { sanitizeMcpValue } from "../src/connectors/mcp-runtime-support.ts";
+import { SECRET_KEY_PATTERN_SOURCE } from "../src/diagnostics.ts";
 
 describe("isSecretLikeKey", () => {
   // The shared predicate must be the union of every term the three former
@@ -56,6 +58,56 @@ describe("sanitizeOpenRouterResponseBody", () => {
     expect(sanitized).toContain("[REDACTED]");
     // Non-secret fields are preserved.
     expect(sanitized).toContain("gpt-5.5");
+  });
+});
+
+describe("sanitizeMcpValue", () => {
+  // The MCP tool-result redactor decides what gets written into
+  // `$OPENWIKI_HOME/connectors/<id>/raw/<run-id>/…` and the connector log. It
+  // used to carry a private, narrower copy of the secret-key pattern that was
+  // missing `bearer` and `user_id`, so those keys were persisted verbatim while
+  // the diagnostics and OpenRouter paths redacted them in the same process.
+  // These tests pin it to the shared source of truth in `src/diagnostics.ts`.
+
+  test.each(["bearer", "Bearer", "user_id", "USER_ID"])(
+    "redacts the key %s that the fork's old narrow pattern let through",
+    (key) => {
+      expect(sanitizeMcpValue({ [key]: "leaked-value" })).toEqual({
+        [key]: "<redacted>",
+      });
+    },
+  );
+
+  // Derived from the shared pattern, not hand-listed: if a term is added to
+  // `SECRET_KEY_PATTERN_SOURCE` and the MCP redactor stops tracking it — or if
+  // the narrow private copy is reintroduced here — this fails.
+  test.each(
+    SECRET_KEY_PATTERN_SOURCE.split("|").map((alternative) =>
+      alternative.replace("[-_]?", "_"),
+    ),
+  )("redacts %s, every term of the shared secret-key pattern", (key) => {
+    expect(isSecretLikeKey(key)).toBe(true);
+    expect(sanitizeMcpValue({ [key]: "leaked-value" })).toEqual({
+      [key]: "<redacted>",
+    });
+  });
+
+  test("redacts secret keys nested inside objects and arrays", () => {
+    expect(
+      sanitizeMcpValue({
+        results: [{ auth: { bearer: "leaked-value" }, title: "Q3 plan" }],
+      }),
+    ).toEqual({
+      results: [{ auth: { bearer: "<redacted>" }, title: "Q3 plan" }],
+    });
+  });
+
+  test("leaves benign keys and scalars untouched", () => {
+    const value = { count: 2, name: "inbox", url: "https://example.com" };
+
+    expect(sanitizeMcpValue(value)).toEqual(value);
+    expect(sanitizeMcpValue("plain")).toBe("plain");
+    expect(sanitizeMcpValue(null)).toBe(null);
   });
 });
 
