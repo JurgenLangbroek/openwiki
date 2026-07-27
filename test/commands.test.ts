@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  getHelpText,
   helpContent,
   parseCommand,
   shouldRunNonInteractively,
@@ -10,10 +11,13 @@ import {
 // restore afterward.
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDevFlag = process.env.OPENWIKI_DEV;
+const originalDebug = process.env.OPENWIKI_DEBUG;
 
 beforeEach(() => {
   delete process.env.NODE_ENV;
   delete process.env.OPENWIKI_DEV;
+  // parseCommand sets OPENWIKI_DEBUG as a side effect of --debug; start clean.
+  delete process.env.OPENWIKI_DEBUG;
 });
 
 afterEach(() => {
@@ -21,6 +25,25 @@ afterEach(() => {
   else process.env.NODE_ENV = originalNodeEnv;
   if (originalDevFlag === undefined) delete process.env.OPENWIKI_DEV;
   else process.env.OPENWIKI_DEV = originalDevFlag;
+  if (originalDebug === undefined) delete process.env.OPENWIKI_DEBUG;
+  else process.env.OPENWIKI_DEBUG = originalDebug;
+});
+
+describe("parseCommand — --debug", () => {
+  test("--debug sets OPENWIKI_DEBUG and still parses the run", () => {
+    expect(process.env.OPENWIKI_DEBUG).toBeUndefined();
+
+    const result = parseCommand(["--debug", "--init"]);
+
+    expect(process.env.OPENWIKI_DEBUG).toBe("1");
+    expect(result).toMatchObject({ kind: "run", command: "init" });
+  });
+
+  test("without --debug, OPENWIKI_DEBUG stays unset", () => {
+    parseCommand(["--init"]);
+
+    expect(process.env.OPENWIKI_DEBUG).toBeUndefined();
+  });
 });
 
 describe("parseCommand — help", () => {
@@ -32,6 +55,17 @@ describe("parseCommand — help", () => {
   test("--help anywhere in argv wins", () => {
     expect(parseCommand(["--init", "--help"]).kind).toBe("help");
   });
+
+  test("help documents scheduled-only ingest usage", () => {
+    const helpText = getHelpText();
+
+    expect(helpText).toContain(
+      "openwiki ingest <source|source-instance|all> [--scheduled] [--print] [--modelId <id>]",
+    );
+    expect(helpText).toContain("--scheduled");
+    expect(helpText).toContain("scheduled-only ingestion");
+    expect(helpText).toContain("openwiki ingest all --scheduled --print");
+  });
 });
 
 describe("parseCommand — chat default", () => {
@@ -41,6 +75,8 @@ describe("parseCommand — chat default", () => {
     expect(result).toMatchObject({
       kind: "run",
       command: "chat",
+      mode: "code",
+      modeSource: "default",
       shouldStart: false,
       userMessage: null,
       print: false,
@@ -64,6 +100,13 @@ describe("parseCommand — chat default", () => {
       modeSource: "positional",
       shouldStart: false,
     });
+    expect(parseCommand(["--mode", "personal"])).toMatchObject({
+      kind: "run",
+      command: "chat",
+      mode: "personal",
+      modeSource: "option",
+      shouldStart: false,
+    });
   });
 
   test("a positional message becomes the user message and starts", () => {
@@ -72,8 +115,67 @@ describe("parseCommand — chat default", () => {
     expect(result).toMatchObject({
       kind: "run",
       command: "chat",
+      mode: "code",
+      modeSource: "default",
       userMessage: "Document the API",
       shouldStart: true,
+    });
+  });
+});
+
+describe("parseCommand — mode after flags", () => {
+  test("a mode word after a flag is still recognized as the mode", () => {
+    expect(parseCommand(["--print", "code", "--update"])).toMatchObject({
+      kind: "run",
+      command: "update",
+      mode: "code",
+      modeSource: "positional",
+      userMessage: null,
+    });
+    expect(parseCommand(["--update", "personal"])).toMatchObject({
+      kind: "run",
+      command: "update",
+      mode: "personal",
+      modeSource: "positional",
+      userMessage: null,
+    });
+  });
+
+  test("mode after a flag satisfies the --init mode requirement", () => {
+    expect(parseCommand(["--print", "code", "--init"])).toMatchObject({
+      kind: "run",
+      command: "init",
+      mode: "code",
+    });
+  });
+
+  test("a mode word is only promoted once; later ones join the message", () => {
+    expect(
+      parseCommand(["--update", "personal", "code", "docs"]),
+    ).toMatchObject({
+      kind: "run",
+      mode: "personal",
+      userMessage: "code docs",
+    });
+  });
+
+  test("a mode word after an explicit --mode stays part of the message", () => {
+    expect(parseCommand(["--mode", "code", "personal", "notes"])).toMatchObject(
+      {
+        kind: "run",
+        mode: "code",
+        modeSource: "option",
+        userMessage: "personal notes",
+      },
+    );
+  });
+
+  test("a mode word after a message word stays part of the message", () => {
+    expect(parseCommand(["document", "personal", "paths"])).toMatchObject({
+      kind: "run",
+      mode: "code",
+      modeSource: "default",
+      userMessage: "document personal paths",
     });
   });
 });
@@ -88,20 +190,38 @@ describe("parseCommand — init/update", () => {
     });
   });
 
-  test("bare --init requires an explicit mode", () => {
-    const result = parseCommand(["--init"]);
-
-    expect(result.kind).toBe("error");
-    if (result.kind === "error") {
-      expect(result.message).toMatch(/requires a mode/u);
-    }
+  test("bare --init defaults to code mode", () => {
+    expect(parseCommand(["--init"])).toMatchObject({
+      kind: "run",
+      command: "init",
+      mode: "code",
+      modeSource: "default",
+      shouldStart: true,
+    });
   });
 
-  test("--update selects the update command and starts", () => {
+  test("bare --update defaults to code mode", () => {
     expect(parseCommand(["--update"])).toMatchObject({
       kind: "run",
       command: "update",
+      mode: "code",
+      modeSource: "default",
       shouldStart: true,
+    });
+  });
+
+  test("explicit personal mode overrides the one-shot default", () => {
+    expect(parseCommand(["personal", "--init"])).toMatchObject({
+      kind: "run",
+      command: "init",
+      mode: "personal",
+      modeSource: "positional",
+    });
+    expect(parseCommand(["--update", "--mode", "personal"])).toMatchObject({
+      kind: "run",
+      command: "update",
+      mode: "personal",
+      modeSource: "option",
     });
   });
 
@@ -168,6 +288,15 @@ describe("parseCommand — --modelId", () => {
     });
   });
 
+  test("@-versioned Vertex AI model id is accepted", () => {
+    expect(
+      parseCommand(["--modelId", "claude-haiku-4-5@20251001"]),
+    ).toMatchObject({
+      kind: "run",
+      modelId: "claude-haiku-4-5@20251001",
+    });
+  });
+
   test("missing value is an error", () => {
     const result = parseCommand(["--modelId"]);
 
@@ -200,6 +329,38 @@ describe("parseCommand — --modelId", () => {
   });
 });
 
+describe("parseCommand — ingest", () => {
+  test("scheduled launchd ingestion parses as scheduled-only print mode", () => {
+    expect(
+      parseCommand(["ingest", "all", "--scheduled", "--print"]),
+    ).toMatchObject({
+      kind: "ingest",
+      target: "all",
+      scheduledOnly: true,
+      print: true,
+      modelId: null,
+    });
+  });
+
+  test("ingest defaults to non-scheduled mode", () => {
+    expect(parseCommand(["ingest", "web-search"])).toMatchObject({
+      kind: "ingest",
+      target: "web-search",
+      scheduledOnly: false,
+      print: false,
+    });
+  });
+
+  test("invalid ingest targets mention the scheduled flag in usage", () => {
+    const result = parseCommand(["ingest", "@bad"]);
+
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("[--scheduled]");
+    }
+  });
+});
+
 describe("parseCommand — unknown options and dry-run gating", () => {
   test("an unknown --flag is an error", () => {
     const result = parseCommand(["--nope"]);
@@ -226,6 +387,38 @@ describe("parseCommand — unknown options and dry-run gating", () => {
       kind: "run",
       dryRun: true,
       command: "init",
+    });
+  });
+});
+
+describe("parseCommand — auth", () => {
+  test("auth tools rejects --force", () => {
+    const result = parseCommand(["auth", "tools", "notion", "--force"]);
+
+    expect(result).toEqual({
+      kind: "error",
+      exitCode: 1,
+      message: "Unknown option for auth: --force",
+    });
+  });
+
+  test("legacy auth configure shorthand accepts --force", () => {
+    expect(parseCommand(["auth", "notion", "--force"])).toMatchObject({
+      kind: "auth",
+      action: "oauth",
+      provider: "notion",
+      force: true,
+    });
+  });
+
+  test("auth configure accepts --force", () => {
+    expect(
+      parseCommand(["auth", "configure", "notion", "--force"]),
+    ).toMatchObject({
+      kind: "auth",
+      action: "configure",
+      provider: "notion",
+      force: true,
     });
   });
 });
@@ -297,6 +490,11 @@ describe("parseCommand — cron", () => {
 
   test("cron pause with a source instance id is rejected", () => {
     const result = parseCommand(["cron", "pause", "web-search-1"]);
+    expect(result.kind).toBe("error");
+  });
+
+  test("cron pause with a source id is rejected", () => {
+    const result = parseCommand(["cron", "pause", "web-search"]);
     expect(result.kind).toBe("error");
   });
 

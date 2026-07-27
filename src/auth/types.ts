@@ -12,6 +12,7 @@ export type OAuthProviderConfig = {
   id: AuthProviderId;
   mcpResourceUrl?: string;
   resolveMcpResourceUrl?: () => Promise<string>;
+  oauthAllowedHosts?: string[];
   scopes: string[];
   tokenUrl?: string;
   tokenMapping: OAuthTokenMapping;

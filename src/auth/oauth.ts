@@ -1,8 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import http from "node:http";
-import { AddressInfo } from "node:net";
 import { loadOpenWikiEnv, saveOpenWikiEnv } from "../env.js";
+import {
+  discoverAuthorizationServerMetadata,
+  discoverProtectedResourceMetadata,
+  validateOAuthEndpointUrl,
+} from "./oauth-discovery.js";
 import { getAuthProvider, resolveOAuthMcpResourceUrl } from "./providers.js";
 import type {
   AuthProviderId,
@@ -22,17 +26,6 @@ type TokenResponse = {
   expires_in?: number;
   refresh_token?: string;
   token_type?: string;
-};
-
-type OAuthMetadata = {
-  authorization_endpoint?: string;
-  registration_endpoint?: string;
-  scopes_supported?: string[];
-  token_endpoint?: string;
-};
-
-type ProtectedResourceMetadata = {
-  authorization_servers?: string[];
 };
 
 const CALLBACK_HOST = "127.0.0.1";
@@ -168,8 +161,14 @@ async function registerMcpOAuthClient(
   redirectUri: string,
   mcpResourceUrl: string,
 ): Promise<OAuthClientRegistration> {
-  const protectedMetadata =
-    await discoverProtectedResourceMetadata(mcpResourceUrl);
+  // `mcpResourceUrl` was already resolved by the caller — statically for most
+  // providers, dynamically for Glean — and is then handed to upstream's
+  // validating discovery rather than read back off the provider. See #59.
+  const validationOptions = { allowedHosts: provider.oauthAllowedHosts };
+  const protectedMetadata = await discoverProtectedResourceMetadata(
+    mcpResourceUrl,
+    validationOptions,
+  );
   const authServer = protectedMetadata.authorization_servers?.[0];
 
   if (!authServer) {
@@ -178,7 +177,10 @@ async function registerMcpOAuthClient(
     );
   }
 
-  const authMetadata = await discoverAuthorizationServerMetadata(authServer);
+  const authMetadata = await discoverAuthorizationServerMetadata(
+    authServer,
+    validationOptions,
+  );
 
   if (
     !authMetadata.authorization_endpoint ||
@@ -190,7 +192,23 @@ async function registerMcpOAuthClient(
     );
   }
 
-  const registrationResponse = await fetch(authMetadata.registration_endpoint, {
+  const authorizationEndpoint = validateOAuthEndpointUrl(
+    authMetadata.authorization_endpoint,
+    `${provider.displayName} authorization endpoint`,
+    validationOptions,
+  ).toString();
+  const tokenEndpoint = validateOAuthEndpointUrl(
+    authMetadata.token_endpoint,
+    `${provider.displayName} token endpoint`,
+    validationOptions,
+  ).toString();
+  const registrationEndpoint = validateOAuthEndpointUrl(
+    authMetadata.registration_endpoint,
+    `${provider.displayName} registration endpoint`,
+    validationOptions,
+  ).toString();
+
+  const registrationResponse = await fetch(registrationEndpoint, {
     body: JSON.stringify({
       client_name: "OpenWiki",
       grant_types: ["authorization_code", "refresh_token"],
@@ -202,6 +220,7 @@ async function registerMcpOAuthClient(
       "Content-Type": "application/json",
     },
     method: "POST",
+    redirect: "manual",
   });
 
   if (!registrationResponse.ok) {
@@ -221,51 +240,11 @@ async function registerMcpOAuthClient(
   }
 
   return {
-    authUrl: authMetadata.authorization_endpoint,
+    authUrl: authorizationEndpoint,
     clientAuth: "none",
     clientId: registration.client_id,
-    tokenUrl: authMetadata.token_endpoint,
+    tokenUrl: tokenEndpoint,
   };
-}
-
-async function discoverProtectedResourceMetadata(
-  resourceUrl: string,
-): Promise<ProtectedResourceMetadata> {
-  const url = new URL(resourceUrl);
-  const candidates = [
-    `${url.origin}/.well-known/oauth-protected-resource${url.pathname}`,
-    `${url.origin}/.well-known/oauth-protected-resource`,
-  ];
-
-  for (const candidate of candidates) {
-    const response = await fetch(candidate);
-    if (response.ok) {
-      return (await response.json()) as ProtectedResourceMetadata;
-    }
-  }
-
-  throw new Error("Could not discover MCP protected resource metadata.");
-}
-
-async function discoverAuthorizationServerMetadata(
-  issuer: string,
-): Promise<OAuthMetadata> {
-  const issuerUrl = new URL(issuer);
-  const candidates = [
-    `${issuerUrl.origin}/.well-known/oauth-authorization-server${issuerUrl.pathname}`,
-    `${issuerUrl.origin}/.well-known/openid-configuration${issuerUrl.pathname}`,
-    `${issuerUrl.origin}/.well-known/oauth-authorization-server`,
-    `${issuerUrl.origin}/.well-known/openid-configuration`,
-  ];
-
-  for (const candidate of candidates) {
-    const response = await fetch(candidate);
-    if (response.ok) {
-      return (await response.json()) as OAuthMetadata;
-    }
-  }
-
-  throw new Error("Could not discover OAuth authorization server metadata.");
 }
 
 function createAuthorizationUrl(
@@ -276,7 +255,10 @@ function createAuthorizationUrl(
   codeChallenge: string,
   mcpResourceUrl: string | undefined,
 ): string {
-  const authUrl = new URL(registration.authUrl);
+  const authUrl = validateOAuthEndpointUrl(
+    registration.authUrl,
+    `${provider.displayName} authorization endpoint`,
+  );
   authUrl.searchParams.set("client_id", registration.clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
@@ -332,14 +314,21 @@ async function exchangeAuthorizationCode({
     body.set("resource", mcpResourceUrl);
   }
 
-  const response = await fetch(registration.tokenUrl, {
-    body,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
+  const response = await fetch(
+    validateOAuthEndpointUrl(
+      registration.tokenUrl,
+      `${provider.displayName} token endpoint`,
+    ).toString(),
+    {
+      body,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      method: "POST",
+      redirect: "manual",
     },
-    method: "POST",
-  });
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -401,7 +390,9 @@ function mapTokenResponse(
   return updates;
 }
 
-async function createCallbackServer(provider: OAuthProviderConfig): Promise<{
+export async function createCallbackServer(
+  provider: OAuthProviderConfig,
+): Promise<{
   close: () => Promise<void>;
   redirectUri: string;
   waitForCode: (expectedState: string) => Promise<string>;
@@ -415,9 +406,12 @@ async function createCallbackServer(provider: OAuthProviderConfig): Promise<{
   });
 
   const server = http.createServer((request, response) => {
+    // Build the base from the configured port, not server.address(): address()
+    // returns null once close() starts, and trailing browser requests (such as
+    // favicon fetches) can still arrive on accepted connections mid-shutdown.
     const requestUrl = new URL(
       request.url ?? "/",
-      `http://${CALLBACK_HOST}:${(server.address() as AddressInfo).port}`,
+      `http://${CALLBACK_HOST}:${callbackPort}`,
     );
     const code = requestUrl.searchParams.get("code");
     const state = requestUrl.searchParams.get("state");
@@ -574,7 +568,11 @@ async function openBrowser(url: string): Promise<boolean> {
     }
 
     if (platform === "win32") {
-      await execFilePromise("cmd", ["/c", "start", "", url]);
+      // "cmd /c start" re-parses the reconstructed command line, so "&" in a
+      // URL acts as a command separator and truncates the authorization URL
+      // at the first query parameter. rundll32's FileProtocolHandler receives
+      // the URL as a verbatim argument and avoids start's title-arg quirk.
+      await execFilePromise("rundll32", ["url.dll,FileProtocolHandler", url]);
       return true;
     }
 
