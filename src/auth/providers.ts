@@ -123,12 +123,42 @@ export function getAuthProvider(
   return AUTH_PROVIDERS[providerId];
 }
 
+/**
+ * The MCP OAuth resource URL for a provider, or `undefined` when the provider
+ * has no MCP resource at all (Gmail, Slack and X authenticate against static
+ * endpoints — absence is not an error).
+ *
+ * Most providers declare `mcpResourceUrl` statically. Glean cannot: its
+ * backend is derived at runtime from a work email or instance name, so it
+ * supplies `resolveMcpResourceUrl` instead. Callers must resolve through here
+ * *before* handing the URL to `oauth-discovery.js`, so the dynamic value is
+ * what gets validated.
+ *
+ * This is also where upstream's `if (!provider.mcpResourceUrl) throw` guard
+ * lives on this fork. Upstream places it inside `registerMcpOAuthClient` and
+ * `discoverMcpTokenEndpoint`, where it can only read the static field — for
+ * Glean that field is legitimately absent, so the guard there would reject a
+ * working provider. Asserting non-empty at this seam keeps the guarantee
+ * ("anything that reaches discovery has a real resource URL") while letting the
+ * dynamic resolution through, and reports a resource-URL-specific failure
+ * instead of falling through to "<provider> OAuth provider is incomplete."
+ */
 export async function resolveOAuthMcpResourceUrl(
   provider: OAuthProviderConfig,
 ): Promise<string | undefined> {
-  return provider.resolveMcpResourceUrl
-    ? await provider.resolveMcpResourceUrl()
-    : provider.mcpResourceUrl;
+  if (!provider.resolveMcpResourceUrl) {
+    return provider.mcpResourceUrl;
+  }
+
+  const resolved = await provider.resolveMcpResourceUrl();
+
+  if (!resolved.trim()) {
+    throw new Error(
+      `${provider.displayName} did not resolve an MCP OAuth resource URL.`,
+    );
+  }
+
+  return resolved;
 }
 
 export function isAuthProviderId(value: string): value is AuthProviderId {

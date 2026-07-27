@@ -3,6 +3,11 @@ import {
   discoverAuthorizationServerMetadata,
   validateOAuthEndpointUrl,
 } from "../src/auth/oauth-discovery.ts";
+import {
+  AUTH_PROVIDERS,
+  resolveOAuthMcpResourceUrl,
+} from "../src/auth/providers.ts";
+import type { OAuthProviderConfig } from "../src/auth/types.ts";
 
 describe("validateOAuthEndpointUrl", () => {
   test("allows HTTPS URLs on explicitly allowed hosts", () => {
@@ -37,6 +42,54 @@ describe("validateOAuthEndpointUrl", () => {
       }),
     ).toThrow();
   });
+});
+
+describe("resolveOAuthMcpResourceUrl", () => {
+  // Upstream guards `if (!provider.mcpResourceUrl) throw` inside
+  // `registerMcpOAuthClient` and `discoverMcpTokenEndpoint`. This fork resolves
+  // the resource URL dynamically for Glean, so that guard cannot live there —
+  // Glean legitimately has no static `mcpResourceUrl` field, and the guard
+  // would reject a working provider. It lives here instead, at the seam that
+  // owns resolution, so the guarantee "an MCP OAuth provider that reaches
+  // discovery has a non-empty resource URL" still holds.
+
+  const providerWithResolver = (resolved: string): OAuthProviderConfig => ({
+    ...AUTH_PROVIDERS.glean,
+    resolveMcpResourceUrl: () => Promise.resolve(resolved),
+  });
+
+  test("returns a statically declared resource URL unchanged", async () => {
+    await expect(
+      resolveOAuthMcpResourceUrl(AUTH_PROVIDERS.notion),
+    ).resolves.toBe("https://mcp.notion.com/mcp");
+  });
+
+  test("returns undefined for a provider that has no MCP resource URL at all", async () => {
+    // Gmail authenticates against static endpoints; absence is not an error.
+    await expect(
+      resolveOAuthMcpResourceUrl(AUTH_PROVIDERS.gmail),
+    ).resolves.toBeUndefined();
+  });
+
+  test("returns the dynamically resolved resource URL", async () => {
+    await expect(
+      resolveOAuthMcpResourceUrl(
+        providerWithResolver("https://acme-be.glean.com/mcp/default"),
+      ),
+    ).resolves.toBe("https://acme-be.glean.com/mcp/default");
+  });
+
+  test.each(["", "   "])(
+    "rejects a dynamic resolver that yields %o instead of falling through to a misleading message",
+    async (resolved) => {
+      // Without this the blank URL is simply falsy at the call site, and the
+      // run fails with "Glean OAuth provider is incomplete." / "… token
+      // endpoint is unknown." — neither of which names the real cause.
+      await expect(
+        resolveOAuthMcpResourceUrl(providerWithResolver(resolved)),
+      ).rejects.toThrow("Glean did not resolve an MCP OAuth resource URL.");
+    },
+  );
 });
 
 describe("OAuth discovery fetches", () => {
