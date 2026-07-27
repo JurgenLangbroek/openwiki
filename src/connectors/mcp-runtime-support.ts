@@ -81,6 +81,17 @@ export function sanitizeMcpValue(value: unknown): unknown {
   return value;
 }
 
+// #59 — BEHAVIOUR GAP, not duplication. Upstream unified every redaction path
+// on `SECRET_KEY_PATTERN_SOURCE` in `src/diagnostics.ts`; this fork-local copy
+// survived the merge because `src/connectors/mcp-runtime.ts` was resolved to
+// the fork's module split, which dropped upstream's hoist. The two patterns are
+// NOT the same: this one is missing `bearer` and `user_id`, so an MCP tool
+// result with a key of either name is written verbatim into
+// `connectors/<id>/raw/<run-id>/` and the connector log while the same key is
+// redacted elsewhere in the same process.
+//
+// Fix direction matters: import `isSecretLikeKey` from `../diagnostics.js` (the
+// superset) and delete this function. Never the reverse.
 function isSecretLikeKey(key: string): boolean {
   return /(token|secret|password|authorization|api[-_]?key|cookie)/iu.test(key);
 }

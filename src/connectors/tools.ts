@@ -47,6 +47,11 @@ const MAX_ESCALATION_TARGET_LENGTH = 120;
 export function createOpenWikiConnectorTools(
   options: OpenWikiConnectorToolsOptions = {},
 ): StructuredToolInterface[] {
+  // #59 Area 3, already satisfied by the upstream sync: this list stays derived
+  // from the registry, so it covers both connectors added in that merge (`glean`
+  // and `langsmith`) with no edit. Upstream's hardcoded eight-id literal was
+  // dropped while resolving the three `enum: connectorIds` conflicts. Verify,
+  // do not rebuild — and never inline the list back.
   const connectorIds = [...CONNECTOR_IDS].sort();
   const mcpConnectorIds = getMcpConnectorIds();
   const mcpConnectorId = mcpConnectorIds[0];

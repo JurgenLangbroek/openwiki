@@ -12,7 +12,7 @@ describe("Connector Posture table", () => {
     );
   });
 
-  test("preserves the posture each connector had before the table existed", () => {
+  test("pins the exact posture of every connector, one row at a time", () => {
     expect(CONNECTOR_POSTURES).toEqual({
       "git-repo": "agentic",
       glean: "hybrid",
