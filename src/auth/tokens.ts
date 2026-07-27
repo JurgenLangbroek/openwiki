@@ -252,9 +252,10 @@ async function resolveTokenUrl(
     ).toString();
   }
 
-  // The resource URL is resolved dynamically before we get here (Glean derives
-  // it from a work email or instance name), then handed to upstream's
-  // validating discovery. See #59.
+  // The resource URL is resolved before we get here — Glean derives it from a
+  // work email or instance name — and is then handed to the validating
+  // discovery below. Resolve first, then validate; the non-empty guard for that
+  // resolution lives in `resolveOAuthMcpResourceUrl`.
   if (mcpResourceUrl) {
     return await discoverMcpTokenEndpoint(provider, mcpResourceUrl);
   }

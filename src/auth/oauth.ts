@@ -162,8 +162,11 @@ async function registerMcpOAuthClient(
   mcpResourceUrl: string,
 ): Promise<OAuthClientRegistration> {
   // `mcpResourceUrl` was already resolved by the caller — statically for most
-  // providers, dynamically for Glean — and is then handed to upstream's
-  // validating discovery rather than read back off the provider. See #59.
+  // providers, dynamically for Glean — and is handed to the validating
+  // discovery below rather than read back off the provider. Resolve first, then
+  // validate: reading `provider.mcpResourceUrl` here instead would see nothing
+  // for Glean, whose backend is only known at runtime. The non-empty guard for
+  // that resolution lives in `resolveOAuthMcpResourceUrl`.
   const validationOptions = { allowedHosts: provider.oauthAllowedHosts };
   const protectedMetadata = await discoverProtectedResourceMetadata(
     mcpResourceUrl,
