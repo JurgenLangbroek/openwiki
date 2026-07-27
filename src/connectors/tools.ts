@@ -47,11 +47,13 @@ const MAX_ESCALATION_TARGET_LENGTH = 120;
 export function createOpenWikiConnectorTools(
   options: OpenWikiConnectorToolsOptions = {},
 ): StructuredToolInterface[] {
-  // #59 Area 3, already satisfied by the upstream sync: this list stays derived
-  // from the registry, so it covers both connectors added in that merge (`glean`
-  // and `langsmith`) with no edit. Upstream's hardcoded eight-id literal was
-  // dropped while resolving the three `enum: connectorIds` conflicts. Verify,
-  // do not rebuild — and never inline the list back.
+  // The connector ids offered to the agent are derived from the registry, never
+  // inlined. Upstream ships a hardcoded literal here; the fork keeps the derived
+  // list, which is why `glean` and `langsmith` both appeared with no edit when
+  // the 2026-07 sync added them. `test/connector-mcp-gate.test.ts` ("publishes
+  // registry-derived connector IDs in tool schemas") pins every `enum:` below
+  // against `CONNECTOR_IDS` / `getMcpConnectorIds()`, so inlining a literal here
+  // fails the suite. Do not re-inline it on the next sync.
   const connectorIds = [...CONNECTOR_IDS].sort();
   const mcpConnectorIds = getMcpConnectorIds();
   const mcpConnectorId = mcpConnectorIds[0];
