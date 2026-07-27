@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 
 import { openWikiHomeDir } from "../openwiki-home.js";
-import { INSTALL_ID_PATH } from "./config.js";
+import { getInstallIdPath } from "./config.js";
 import { noticeSuppressed } from "./gates.js";
 
 /**
@@ -14,8 +14,11 @@ export async function getOrCreateInstallId(): Promise<{
   id: string;
   isNew: boolean;
 }> {
+  // Resolved per call, never at module load: the home can move (ADR-0004).
+  const installIdPath = getInstallIdPath();
+
   try {
-    const existing = (await readFile(INSTALL_ID_PATH, "utf8")).trim();
+    const existing = (await readFile(installIdPath, "utf8")).trim();
 
     if (existing.length > 0) {
       return { id: existing, isNew: false };
@@ -28,11 +31,11 @@ export async function getOrCreateInstallId(): Promise<{
 
   const id = randomUUID();
   await mkdir(openWikiHomeDir, { recursive: true, mode: 0o700 });
-  await writeFile(INSTALL_ID_PATH, `${id}\n`, {
+  await writeFile(installIdPath, `${id}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-  await chmod(INSTALL_ID_PATH, 0o600);
+  await chmod(installIdPath, 0o600);
 
   return { id, isNew: true };
 }

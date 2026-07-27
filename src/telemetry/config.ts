@@ -11,8 +11,15 @@ export const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
 /**
  * Persistent, anonymous per-machine install id.
+ *
+ * Upstream keeps this as a module-level `const`. In this fork `openWikiHomeDir`
+ * is a live `export let` binding that `resetOpenWikiHomePaths()` can move, so a
+ * const would snapshot the home at module load and ignore every later override
+ * — the exact footgun ADR-0004 and CLAUDE.md forbid. Read it at use time.
  */
-export const INSTALL_ID_PATH = path.join(openWikiHomeDir, "install-id");
+export function getInstallIdPath(): string {
+  return path.join(openWikiHomeDir, "install-id");
+}
 
 /**
  * Longest we wait for the event send (and the client shutdown) before letting

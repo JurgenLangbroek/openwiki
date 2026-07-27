@@ -33,6 +33,7 @@ import {
 } from "../src/telemetry/gates.ts";
 import { recordRun } from "../src/telemetry/senders.ts";
 import type { RunTelemetry } from "../src/telemetry/types.ts";
+import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
 const ENV_KEYS = [
   "OPENWIKI_TELEMETRY_DISABLED",
@@ -42,8 +43,17 @@ const ENV_KEYS = [
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
+let savedOpenWikiHome: string | undefined;
+let tempHome: string;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // `src/telemetry/install-id.ts` mkdirs and writes under the OpenWiki home for
+  // real. The vitest home guard makes the developer's real home unreachable, so
+  // this file must be given a throwaway one or every write fails ENOTDIR.
+  // Issue #75; #63 disables telemetry in code and may reshape this file.
+  savedOpenWikiHome = process.env.OPENWIKI_HOME;
+  tempHome = await useTempOpenWikiHome("openwiki-telemetry-");
+
   savedEnv = {};
   for (const key of ENV_KEYS) {
     savedEnv[key] = process.env[key];
@@ -59,7 +69,7 @@ beforeEach(() => {
   posthog.PostHog.mockClear();
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const key of ENV_KEYS) {
     if (savedEnv[key] === undefined) {
       delete process.env[key];
@@ -67,6 +77,14 @@ afterEach(() => {
       process.env[key] = savedEnv[key];
     }
   }
+
+  if (savedOpenWikiHome === undefined) {
+    delete process.env.OPENWIKI_HOME;
+  } else {
+    process.env.OPENWIKI_HOME = savedOpenWikiHome;
+  }
+
+  await rm(tempHome, { force: true, recursive: true });
 });
 
 function runDetails(overrides: Partial<RunTelemetry> = {}): RunTelemetry {
