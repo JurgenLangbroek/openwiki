@@ -108,6 +108,7 @@ const definition: ConnectorDefinition = {
     "Probes a Glean tenant's MCP tool catalog and pulls deterministic evidence streams.",
   displayName: "Glean",
   id: "glean",
+  mode: "personal",
   requiredEnv: [
     OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY,
     OPENWIKI_GLEAN_REFRESH_TOKEN_ENV_KEY,

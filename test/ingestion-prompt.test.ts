@@ -8,7 +8,7 @@ import {
 
 describe("source synthesis policy", () => {
   test("assembles Glean guidance for durable pages and permalinked evidence", () => {
-    const policy = createSourceSynthesisPolicy("glean");
+    const policy = createSourceSynthesisPolicy(createConnectorRegistry().glean);
 
     expect(policy).toMatch(/\/projects\/<slug>\.md/u);
     expect(policy).toMatch(/\/people\/<slug>\.md/u);
@@ -26,7 +26,7 @@ describe("source synthesis policy", () => {
   });
 
   test("does not add Glean-specific guidance to another connector", () => {
-    const policy = createSourceSynthesisPolicy("slack");
+    const policy = createSourceSynthesisPolicy(createConnectorRegistry().slack);
 
     expect(policy).not.toMatch(/\/projects\/<slug>\.md/u);
     expect(policy).not.toMatch(/Glean permalink/u);

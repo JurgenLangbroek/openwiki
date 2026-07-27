@@ -361,7 +361,7 @@ Source-specific instructions:
 ${ingestionGoal || "(not provided)"}
 
 Reusable synthesis policy:
-${createSourceSynthesisPolicy(connector.id)}${createEscalationSection(connector, "synthesis")}
+${createSourceSynthesisPolicy(connector)}${createEscalationSection(connector, "synthesis")}
 
 Backfill-history precedence:
 - The backfill-history instructions below OVERRIDE the reusable policy wherever they conflict. In particular, the reusable policy's /commitments.md and current-status routing does not apply to backfilled history.

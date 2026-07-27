@@ -27,6 +27,7 @@ export const CONNECTOR_POSTURES = {
   glean: "hybrid",
   google: "deterministic",
   hackernews: "deterministic",
+  langsmith: "deterministic",
   notion: "agentic",
   slack: "deterministic",
   "web-search": "deterministic",
