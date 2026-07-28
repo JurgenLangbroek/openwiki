@@ -142,23 +142,34 @@ export function getAuthProvider(
  * ("anything that reaches discovery has a real resource URL") while letting the
  * dynamic resolution through, and reports a resource-URL-specific failure
  * instead of falling through to "<provider> OAuth provider is incomplete."
+ *
+ * The guard covers *both* branches: a blank static `mcpResourceUrl` is as
+ * unusable as a blank dynamic resolution, and would otherwise be truthy at the
+ * call sites and die inside `new URL()` with a bare `TypeError: Invalid URL`.
+ * The returned URL is trimmed, because it is not only parsed — it is also sent
+ * verbatim as the OAuth `resource` parameter in the token request body and the
+ * authorization URL, where padding would go on the wire.
  */
 export async function resolveOAuthMcpResourceUrl(
   provider: OAuthProviderConfig,
 ): Promise<string | undefined> {
-  if (!provider.resolveMcpResourceUrl) {
-    return provider.mcpResourceUrl;
+  const resolved = provider.resolveMcpResourceUrl
+    ? await provider.resolveMcpResourceUrl()
+    : provider.mcpResourceUrl;
+
+  if (resolved === undefined) {
+    return undefined;
   }
 
-  const resolved = await provider.resolveMcpResourceUrl();
+  const resourceUrl = resolved.trim();
 
-  if (!resolved.trim()) {
+  if (!resourceUrl) {
     throw new Error(
       `${provider.displayName} did not resolve an MCP OAuth resource URL.`,
     );
   }
 
-  return resolved;
+  return resourceUrl;
 }
 
 export function isAuthProviderId(value: string): value is AuthProviderId {

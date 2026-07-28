@@ -90,6 +90,45 @@ describe("resolveOAuthMcpResourceUrl", () => {
       ).rejects.toThrow("Glean did not resolve an MCP OAuth resource URL.");
     },
   );
+
+  test.each(["", "   "])(
+    "rejects a blank statically declared resource URL %o, not only a blank dynamic one",
+    async (mcpResourceUrl) => {
+      // The guard covers both branches. A blank static field is truthy-checked
+      // the same way at the call sites, and would otherwise reach
+      // `validateOAuthEndpointUrl` and die on a bare `TypeError: Invalid URL`
+      // from `new URL()` — the same unnamed-cause failure the guard exists to
+      // replace, one branch over.
+      await expect(
+        resolveOAuthMcpResourceUrl({
+          ...AUTH_PROVIDERS.notion,
+          mcpResourceUrl,
+        }),
+      ).rejects.toThrow(
+        "Notion MCP did not resolve an MCP OAuth resource URL.",
+      );
+    },
+  );
+
+  test("trims the resolved resource URL so padding never reaches the wire", async () => {
+    // The resolved string is not only fed to `new URL()` (which tolerates
+    // padding) — it is also sent verbatim as the OAuth `resource` parameter in
+    // the token request body and the authorization URL.
+    await expect(
+      resolveOAuthMcpResourceUrl(
+        providerWithResolver(" https://acme-be.glean.com/mcp/default \n"),
+      ),
+    ).resolves.toBe("https://acme-be.glean.com/mcp/default");
+  });
+
+  test("trims a statically declared resource URL too", async () => {
+    await expect(
+      resolveOAuthMcpResourceUrl({
+        ...AUTH_PROVIDERS.notion,
+        mcpResourceUrl: "  https://mcp.notion.com/mcp  ",
+      }),
+    ).resolves.toBe("https://mcp.notion.com/mcp");
+  });
 });
 
 describe("OAuth discovery fetches", () => {
