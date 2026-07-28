@@ -22,6 +22,25 @@ export const CONNECTOR_IDS = [
   "slack",
 ] as const satisfies readonly ConnectorId[];
 
+type AssertNever<T extends never> = T;
+
+/**
+ * `satisfies readonly ConnectorId[]` above checks that every listed id *is* a
+ * `ConnectorId`; it does not check the converse. This does: a `ConnectorId`
+ * missing from `CONNECTOR_IDS` makes `Exclude<…>` a non-`never` union, which
+ * fails `AssertNever`'s constraint and breaks `pnpm typecheck`.
+ *
+ * Worth the two lines because the failure it catches is silent. Adding a
+ * connector to the `ConnectorId` union and to `createConnectorRegistry()` is
+ * compiler-enforced; forgetting it here used to compile clean and leave the new
+ * connector unreachable through `openwiki_ingest_connector`,
+ * `openwiki_list_raw_items` and `openwiki_read_raw_item`, whose schema enums
+ * derive from this list (`src/connectors/tools.ts`).
+ */
+export type EveryConnectorIdIsListed = AssertNever<
+  Exclude<ConnectorId, (typeof CONNECTOR_IDS)[number]>
+>;
+
 export type ConnectorRegistry = Record<ConnectorId, PosturedConnectorRuntime>;
 
 export function createConnectorRegistry(): ConnectorRegistry {

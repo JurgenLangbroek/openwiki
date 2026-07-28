@@ -54,6 +54,13 @@ export function createOpenWikiConnectorTools(
   // registry-derived connector IDs in tool schemas") pins every `enum:` below
   // against `CONNECTOR_IDS` / `getMcpConnectorIds()`, so inlining a literal here
   // fails the suite. Do not re-inline it on the next sync.
+  //
+  // Precisely what each half is enforced by: `mcpConnectorIds` walks the
+  // registry record itself, which TypeScript checks exhaustively;
+  // `CONNECTOR_IDS` is a hand-written literal, kept exhaustive by the
+  // `EveryConnectorIdIsListed` assertion in `registry.ts` rather than by the
+  // test here — the test compares the published schema against `CONNECTOR_IDS`,
+  // so it detects de-derivation, not a missing id.
   const connectorIds = [...CONNECTOR_IDS].sort();
   const mcpConnectorIds = getMcpConnectorIds();
   const mcpConnectorId = mcpConnectorIds[0];
