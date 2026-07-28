@@ -171,6 +171,8 @@ export async function callGatewayDatasourceRead(
     runId,
     "gateway-datasource-read.json",
     {
+      // Arguments only — `result` below is persisted verbatim. See the note on
+      // `sanitizeMcpValue`.
       args: sanitizeMcpValue(input.args),
       connectorId: input.connectorId,
       generatedAt: new Date().toISOString(),

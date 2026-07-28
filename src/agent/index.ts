@@ -1632,8 +1632,12 @@ async function readResponseBodyPreview(response: Response): Promise<string> {
 export function sanitizeOpenRouterResponseBody(body: string): string {
   // Redact string values whose JSON key name contains any secret-bearing term
   // (shared source of truth with `isSecretLikeKey` in `src/diagnostics.ts`).
-  // The MCP tool-result redactor in `src/connectors/mcp-runtime-support.ts` is
-  // on that same source of truth, so this claim covers it too.
+  // The MCP argument redactor (`sanitizeMcpValue` in
+  // `src/connectors/mcp-runtime-support.ts`) is on that same source of truth, so
+  // the term list cannot drift between the two. The claim stops at the term
+  // list: MCP tool *results* are persisted unredacted under
+  // `connectors/<id>/raw/`, so this comment is not proof that the MCP path is
+  // covered end to end. See the note on `sanitizeMcpValue`.
   const secretJsonKeyPattern = new RegExp(
     `"([^"]*(?:${SECRET_KEY_PATTERN_SOURCE})[^"]*)"\\s*:\\s*"[^"]*"`,
     "giu",

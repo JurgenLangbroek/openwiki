@@ -66,15 +66,26 @@ export async function recordMcpRun(
 }
 
 /**
- * Redacts secret-bearing keys out of an MCP tool argument or result before it
- * is persisted under `connectors/<id>/raw/<run-id>/` or written to the
- * connector log.
+ * Redacts secret-bearing keys out of an MCP tool **argument** before it is
+ * persisted under `connectors/<id>/raw/<run-id>/` or written to the connector
+ * log or the Run Ledger.
  *
  * The key predicate is `isSecretLikeKey` from `src/diagnostics.ts` — the single
  * source of truth shared with the credential diagnostics path and the
  * OpenRouter body sanitiser. This module used to keep a private, narrower copy
  * that was missing `bearer` and `user_id`; never reintroduce one. Extend
  * `SECRET_KEY_PATTERN_SOURCE` instead, and every redaction path follows.
+ *
+ * **What this does not cover.** Tool *results* are persisted verbatim. All
+ * three callers sanitise only the arguments — `mcp-runtime.ts` and
+ * `gateway-read.ts` write `result` unchanged into the raw file, and
+ * `sources/mcp.ts` writes both its configured args and its operation results
+ * unchanged. That matches upstream (`bef5a08:src/connectors/mcp-runtime.ts`
+ * also persists results unsanitised) and is deliberate for now — `raw/` is the
+ * agent's ingestion corpus, so blanket key-name redaction of result payloads
+ * has a real usefulness cost. Do not read this function's existence as proof
+ * that `connectors/<id>/raw/` is free of secrets a server returned. Widening it
+ * is tracked separately.
  */
 export function sanitizeMcpValue(value: unknown): unknown {
   if (Array.isArray(value)) {

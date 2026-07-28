@@ -212,6 +212,8 @@ export async function callMcpConnectorTool(
     runId,
     "mcp-tool-result.json",
     {
+      // Arguments only — `result` below is persisted verbatim, as it is
+      // upstream. See the note on `sanitizeMcpValue`.
       args: sanitizeMcpValue(args),
       connectorId,
       endpoint,
