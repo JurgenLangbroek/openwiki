@@ -258,9 +258,18 @@ function createAuthorizationUrl(
   codeChallenge: string,
   mcpResourceUrl: string | undefined,
 ): string {
+  // Every `validateOAuthEndpointUrl` call in this file carries the provider's
+  // allowed-host list, including the ones — like this one — that re-check a URL
+  // an earlier call already cleared. The allowlist then holds by construction
+  // rather than by accident of data flow: today `registration.authUrl` can only
+  // come from an already-validated discovery endpoint or a hardcoded provider
+  // field, but an RFC 7591 registration response may legitimately carry
+  // endpoint metadata, and the day someone reads it from there the host check
+  // must not silently drop out.
   const authUrl = validateOAuthEndpointUrl(
     registration.authUrl,
     `${provider.displayName} authorization endpoint`,
+    { allowedHosts: provider.oauthAllowedHosts },
   );
   authUrl.searchParams.set("client_id", registration.clientId);
   authUrl.searchParams.set("redirect_uri", redirectUri);
@@ -321,6 +330,7 @@ async function exchangeAuthorizationCode({
     validateOAuthEndpointUrl(
       registration.tokenUrl,
       `${provider.displayName} token endpoint`,
+      { allowedHosts: provider.oauthAllowedHosts },
     ).toString(),
     {
       body,

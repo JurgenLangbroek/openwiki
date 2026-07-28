@@ -249,6 +249,7 @@ async function resolveTokenUrl(
     return validateOAuthEndpointUrl(
       provider.tokenUrl,
       `${provider.displayName} token endpoint`,
+      { allowedHosts: provider.oauthAllowedHosts },
     ).toString();
   }
 
