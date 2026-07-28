@@ -165,10 +165,35 @@ export function getAuthProvider(
  * The returned URL is trimmed, because it is not only parsed — it is also sent
  * verbatim as the OAuth `resource` parameter in the token request body and the
  * authorization URL, where padding would go on the wire.
+ *
+ * This seam also refuses to resolve for a provider that discovers its endpoints
+ * from metadata but declares no `oauthAllowedHosts`. Upstream's field is
+ * optional and its matcher skips the check when the list is absent *or empty*,
+ * so such a provider silently follows whatever host the resource server's
+ * metadata names — and `refreshOAuthAccessToken` then posts the refresh token
+ * there. Every discovering provider passes through here before any discovery
+ * happens, which makes this the one place the requirement can be enforced
+ * fail-closed without altering upstream's type. The check runs *before*
+ * resolution: a missing declaration is a defect in the provider table, not a
+ * user misconfiguration, so it must not depend on the user's environment or on
+ * whether resolution happens to reach the network first.
  */
 export async function resolveOAuthMcpResourceUrl(
   provider: OAuthProviderConfig,
 ): Promise<string | undefined> {
+  if (
+    provider.mcpResourceUrl === undefined &&
+    provider.resolveMcpResourceUrl === undefined
+  ) {
+    return undefined;
+  }
+
+  if (!provider.oauthAllowedHosts?.length) {
+    throw new Error(
+      `${provider.displayName} discovers OAuth endpoints from metadata, so it must declare oauthAllowedHosts.`,
+    );
+  }
+
   const resolved = provider.resolveMcpResourceUrl
     ? await provider.resolveMcpResourceUrl()
     : provider.mcpResourceUrl;

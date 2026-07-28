@@ -113,6 +113,7 @@ describe("Glean's declared OAuth allowed hosts", () => {
     ["an RFC1918 address", "https://10.0.0.1/token"],
     ["the link-local metadata address", "https://169.254.169.254/latest/"],
     ["an IPv6 loopback address", "https://[::1]/token"],
+    ["an IPv6 unique-local address", "https://[fd00::1]/token"],
   ])("refuses %s regardless of the allowed-host list", (_case, value) => {
     // Inherited from upstream and not configurable: the private-network check
     // runs before the allowed-host check and cannot be opted out of by a
@@ -124,6 +125,98 @@ describe("Glean's declared OAuth allowed hosts", () => {
       }),
     ).toThrow("endpoint must not target localhost or private networks.");
   });
+
+  test("refuses an IPv4-mapped IPv6 private address, but by host list rather than by the private-network check", () => {
+    // Upstream's `isBlockedIpv6` has an `::ffff:<dotted quad>` branch that
+    // cannot fire on a URL-derived hostname: WHATWG serialises
+    // `[::ffff:10.0.0.1]` to `[::ffff:a00:1]`, which its dotted-quad regex
+    // never matches. On this fork the target is still refused — by Glean's
+    // allowed-host list — and that is the only thing refusing it, which is a
+    // second reason a discovering provider must never be allowed to omit the
+    // list. Asserted as it behaves, not as it reads.
+    expect(() =>
+      validateOAuthEndpointUrl("https://[::ffff:10.0.0.1]/token", "endpoint", {
+        allowedHosts: gleanAllowedHosts,
+      }),
+    ).toThrow("endpoint host is not allowed.");
+  });
+});
+
+describe("an OAuth provider that discovers its endpoints must declare allowed hosts", () => {
+  // `oauthAllowedHosts` is optional on upstream's `OAuthProviderConfig`, and
+  // upstream's matcher skips the host check entirely when the list is absent or
+  // empty. So a provider added later that discovers its endpoints from metadata
+  // and forgets the list gets no host check, no warning, and a green suite —
+  // which is exactly the hole this ticket closed for Glean, reintroduced by
+  // omission. `resolveOAuthMcpResourceUrl` is the fork-owned seam every such
+  // provider passes through before any discovery happens, so the requirement is
+  // enforced there and fails closed rather than silently opening up.
+
+  const withoutAllowedHosts = (
+    provider: OAuthProviderConfig,
+  ): OAuthProviderConfig => {
+    const stripped = { ...provider };
+    delete stripped.oauthAllowedHosts;
+    return stripped;
+  };
+
+  test("refuses to resolve for a provider that declares no allowed hosts", async () => {
+    // Fails before resolution, so this never reaches Glean's resolver (which
+    // reads the OpenWiki home). A missing declaration is a defect in the
+    // provider table, not a user misconfiguration, so it must be reported
+    // deterministically rather than behind whatever the environment does first:
+    // move the guard after resolution and this test fails on the home guard's
+    // ENOTDIR instead of the assertion.
+    await expect(
+      resolveOAuthMcpResourceUrl(withoutAllowedHosts(AUTH_PROVIDERS.glean)),
+    ).rejects.toThrow(
+      "Glean discovers OAuth endpoints from metadata, so it must declare oauthAllowedHosts.",
+    );
+  });
+
+  test("treats an empty allowed-host list as no declaration at all", async () => {
+    // Deliberate: upstream's check is gated on `allowedHosts.length > 0`, so an
+    // empty array admits every host just as absence does. Reading it as "no
+    // restriction wanted" would make the guard trivially bypassable by the same
+    // omission it exists to catch.
+    await expect(
+      resolveOAuthMcpResourceUrl({
+        ...AUTH_PROVIDERS.notion,
+        oauthAllowedHosts: [],
+      }),
+    ).rejects.toThrow(
+      "Notion MCP discovers OAuth endpoints from metadata, so it must declare oauthAllowedHosts.",
+    );
+  });
+
+  test("does not require a list from a provider that discovers nothing", async () => {
+    // Gmail, Slack and X authenticate against hardcoded endpoints and never
+    // reach discovery, so there is no metadata to be redirected by and nothing
+    // for a host list to constrain.
+    await expect(
+      resolveOAuthMcpResourceUrl(withoutAllowedHosts(AUTH_PROVIDERS.gmail)),
+    ).resolves.toBeUndefined();
+  });
+
+  test.each(Object.values(AUTH_PROVIDERS).map((provider) => [provider.id]))(
+    "%s declares an allowed-host list if it discovers endpoints",
+    (providerId) => {
+      // The class, not the instance: this fails the moment a provider that
+      // discovers endpoints from metadata is added without a list, whether or
+      // not anyone writes a test for that provider's auth flow.
+      const provider = AUTH_PROVIDERS[providerId];
+      const discoversEndpoints = Boolean(
+        provider.mcpResourceUrl ?? provider.resolveMcpResourceUrl,
+      );
+
+      expect(
+        discoversEndpoints
+          ? (provider.oauthAllowedHosts?.length ?? 0) > 0
+          : true,
+        `${providerId} discovers OAuth endpoints from metadata but declares no oauthAllowedHosts`,
+      ).toBe(true);
+    },
+  );
 });
 
 describe("resolveOAuthMcpResourceUrl", () => {
