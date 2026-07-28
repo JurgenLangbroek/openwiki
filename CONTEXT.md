@@ -62,3 +62,7 @@ The generated listing of the Concept Pages within one wiki directory. Machine-ma
 
 **Open Question**:
 An uncertainty recorded in the Brain Wiki that future evidence or exploration is expected to resolve. The set of active open questions doubles as the exploration queue.
+
+**Allowed OAuth Hosts**:
+The registrable domain (or domains) a Connector's auth provider declares as the only place its OAuth endpoints may live, matched exactly or by subdomain suffix. It constrains endpoints the provider _discovers_ from a resource server's metadata, so a tenant URL derived from user input cannot redirect a token request off the vendor's domain. A provider that discovers endpoints and declares none is refused rather than left unconstrained (`docs/adr/0005-glean-oauth-endpoints-are-confined-to-gleans-registrable-domain.md`).
+_Avoid_: allowlist (bare — ambiguous with the tool and downstream-tool allowlists)
