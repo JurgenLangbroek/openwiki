@@ -1122,7 +1122,10 @@ describe("Glean connector", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -1132,11 +1135,11 @@ describe("Glean connector", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           tokenRefreshes += 1;
           return Promise.resolve(
             Response.json({
@@ -1204,7 +1207,10 @@ describe("Glean connector", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -1214,11 +1220,11 @@ describe("Glean connector", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           tokenRefreshes += 1;
           return Promise.resolve(
             Response.json({
@@ -2429,7 +2435,10 @@ describe("Glean OAuth provider", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -2439,11 +2448,11 @@ describe("Glean OAuth provider", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           return Promise.resolve(
             Response.json({
               access_token: "new-access-token",
@@ -2467,5 +2476,118 @@ describe("Glean OAuth provider", () => {
     expect(requests.at(-1)?.body).toContain(
       "resource=https%3A%2F%2Facme-be.glean.com%2Fmcp%2Fdefault",
     );
+  });
+
+  test("resolves the backend from a work email and refreshes against an authorization server on Glean's own domain", async () => {
+    // The end-to-end path the allowed-host list must not break: a work email
+    // domain becomes an instance label, the instance becomes the backend host,
+    // the backend serves protected-resource metadata naming a separately-hosted
+    // authorization server, and that server is on Glean's domain so discovery
+    // clears the host check.
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_EMAIL = "j.doe@acme.com";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        requests.push(url);
+
+        if (url.includes("oauth-protected-resource")) {
+          return Promise.resolve(
+            Response.json({
+              authorization_servers: ["https://auth.glean.com"],
+            }),
+          );
+        }
+        if (
+          url.includes("oauth-authorization-server") ||
+          url.includes("openid-configuration")
+        ) {
+          return Promise.resolve(
+            Response.json({ token_endpoint: "https://auth.glean.com/token" }),
+          );
+        }
+        if (url === "https://auth.glean.com/token") {
+          return Promise.resolve(
+            Response.json({
+              access_token: "new-access-token",
+              expires_in: 3600,
+              token_type: "Bearer",
+            }),
+          );
+        }
+
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+
+    await expect(refreshOAuthAccessToken("glean")).resolves.toBe(
+      "new-access-token",
+    );
+    expect(requests[0]).toBe(
+      "https://acme-be.glean.com/.well-known/oauth-protected-resource/mcp/default",
+    );
+    expect(requests.at(-1)).toBe("https://auth.glean.com/token");
+  });
+
+  test("refuses an authorization server the backend advertises off Glean's domain", async () => {
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_INSTANCE = "acme";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        requests.push(url);
+
+        if (url.includes("oauth-protected-resource")) {
+          return Promise.resolve(
+            Response.json({
+              authorization_servers: ["https://auth.attacker.example"],
+            }),
+          );
+        }
+
+        return Promise.resolve(
+          Response.json({
+            access_token: "attacker-issued-token",
+            token_endpoint: "https://auth.attacker.example/token",
+          }),
+        );
+      }),
+    );
+
+    await expect(refreshOAuthAccessToken("glean")).rejects.toThrow(
+      "OAuth authorization server issuer host is not allowed.",
+    );
+    // The refusal is what stops the refresh token from being posted to the
+    // attacker's host, so assert the request never happened rather than only
+    // that an error surfaced.
+    expect(
+      requests.filter((url) => url.includes("attacker.example")),
+    ).toStrictEqual([]);
+  });
+
+  test("refuses a backendBaseUrl escape hatch pointed off Glean's domain", async () => {
+    // The accepted cost of the allowed-host list. `resolveGleanBackendUrl`
+    // takes any HTTPS origin, so a Glean deployment on a custom domain resolves
+    // a backend fine and then fails the host check at OAuth time. Widening the
+    // list is the intended fix; this test exists so the failure is a documented
+    // decision rather than a surprise bug report.
+    process.env.OPENWIKI_GLEAN_BACKEND_URL = "https://glean.acme.example";
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshOAuthAccessToken("glean")).rejects.toThrow(
+      "MCP protected resource URL host is not allowed.",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

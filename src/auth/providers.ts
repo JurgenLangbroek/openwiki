@@ -19,7 +19,10 @@ import {
   OPENWIKI_X_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_X_REFRESH_TOKEN_ENV_KEY,
 } from "../constants.js";
-import { resolveGleanTarget } from "../connectors/sources/glean-backend.js";
+import {
+  GLEAN_REGISTRABLE_DOMAIN,
+  resolveGleanTarget,
+} from "../connectors/sources/glean-backend.js";
 import type { AuthProviderId, OAuthProviderConfig } from "./types.js";
 
 export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
@@ -27,6 +30,19 @@ export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
     clientAuth: "none",
     displayName: "Glean",
     id: "glean",
+    // Glean's OAuth endpoints are all discovered from metadata served by a
+    // backend whose host is the most user-supplied one in the system: it comes
+    // from a work email domain or an instance name typed during setup, with an
+    // escape hatch (`OPENWIKI_GLEAN_BACKEND_URL`) accepting an arbitrary HTTPS
+    // origin. Declaring the registrable domain rather than a fixed hostname is
+    // what makes the list compatible with that: upstream's matcher does
+    // exact-or-suffix matching, so this admits every instance-derived backend
+    // (`acme-be.glean.com`) and any separately-hosted authorization server on
+    // the same domain, while refusing an endpoint the discovered metadata points
+    // off-domain. A Glean deployment on a custom domain has to widen this list;
+    // that cost is accepted, and pinned by a test so the failure is a decision
+    // rather than a surprise.
+    oauthAllowedHosts: [GLEAN_REGISTRABLE_DOMAIN],
     resolveMcpResourceUrl: async () => (await resolveGleanTarget()).mcpUrl,
     scopes: ["chat", "documents", "feed", "mcp", "people", "search"],
     tokenMapping: {
