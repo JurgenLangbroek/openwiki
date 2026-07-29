@@ -33,9 +33,6 @@ import {
   normalizeModelId,
   OPENAI_CHATGPT_EMAIL_ENV_KEY,
   OPENAI_CHATGPT_PLAN_ENV_KEY,
-  OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY,
-  OPENWIKI_GLEAN_EMAIL_ENV_KEY,
-  OPENWIKI_GLEAN_INSTANCE_ENV_KEY,
   OPENWIKI_GOOGLE_CLIENT_ID_ENV_KEY,
   OPENWIKI_GOOGLE_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
@@ -70,10 +67,7 @@ import {
 } from "./connectors/sources/langsmith/setup.js";
 import type { LangSmithRegion } from "./connectors/sources/langsmith/setup.js";
 import type { ConnectorId } from "./connectors/types.js";
-import {
-  GleanBackendResolutionError,
-  resolveGleanBackendUrl,
-} from "./connectors/sources/glean-backend.js";
+import { GLEAN_SOURCE_OPTION } from "./connectors/sources/glean/setup.js";
 import { configHasExplorableSource } from "./exploration-eligibility.js";
 import { getConnectorConfigPath } from "./openwiki-home.js";
 import {
@@ -174,6 +168,23 @@ type SourceSetupOption = {
   id: ConnectorId;
   instructions: string[];
   secretInputs: SourceSecretInput[];
+  /**
+   * Connector-owned rule for one of its secret inputs: the message to show, or
+   * null when the value is acceptable. Lets a connector's `sources/<id>/setup.ts`
+   * own its input rules so this file needs no per-connector branch (ADR-0004).
+   */
+  validateSecretInput?: (envKey: string, value: string) => string | null;
+  /**
+   * Connector config to record once authorization succeeds, or undefined when the
+   * connector needs none. Called after the OAuth flow returns, so it can read
+   * whatever that flow persisted.
+   */
+  resolveConnectorConfigAfterAuth?: () => Record<string, unknown> | undefined;
+  /**
+   * Turns an authorization failure into a retryable secret-input prompt, or null
+   * to let the generic error report handle it.
+   */
+  describeAuthFailure?: (error: unknown) => SourceAuthRetry | null;
 };
 
 type SourceSecretInput = {
@@ -181,6 +192,15 @@ type SourceSecretInput = {
   label: string;
   optional?: boolean;
   secret?: boolean;
+};
+
+/**
+ * A connector's translation of an authorization failure: what to show, and which
+ * secret input to send the user back to.
+ */
+type SourceAuthRetry = {
+  message: string;
+  retryEnvKey: string;
 };
 
 type SourceSetupState = {
@@ -380,27 +400,7 @@ const SOURCE_OPTIONS = [
       },
     ],
   },
-  {
-    authProvider: "glean",
-    displayName: "Glean (work context)",
-    examples: [
-      "Track active projects, teams, and decisions across my work context.",
-      "Follow important tickets and docs connected to current work.",
-    ],
-    id: "glean",
-    instructions: [
-      "Enter your work email so OpenWiki can resolve your company's Glean backend from its domain.",
-      "No client ID or client secret is needed because OpenWiki self-registers via OAuth.",
-      "Approve access in the browser window when it opens.",
-    ],
-    secretInputs: [
-      {
-        envKey: OPENWIKI_GLEAN_EMAIL_ENV_KEY,
-        label: "Work email",
-        secret: false,
-      },
-    ],
-  },
+  GLEAN_SOURCE_OPTION,
   {
     displayName: "Web Search (Tavily)",
     examples: [
@@ -498,26 +498,6 @@ export function needsCredentialSetup(
   return mode === "code"
     ? !isRepositoryCodeOnboardingCompleteSync(getDefaultCodeRepoRootPath())
     : !isOpenWikiOnboardingCompleteSync();
-}
-
-export function validateGleanWorkEmail(
-  email: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  try {
-    resolveGleanBackendUrl({
-      backendBaseUrl: env[OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY],
-      email: email.trim(),
-      instance: env[OPENWIKI_GLEAN_INSTANCE_ENV_KEY],
-    });
-    return null;
-  } catch (error) {
-    if (error instanceof GleanBackendResolutionError) {
-      return getGleanBackendResolutionRetryMessage(error);
-    }
-
-    throw error;
-  }
 }
 
 function needsAwsCredentialRepair(provider: OpenWikiProvider): boolean {
@@ -2355,15 +2335,13 @@ export function InitSetup({
         return;
       }
 
-      if (
-        selectedSource.id === "glean" &&
-        currentSecretInput.envKey === OPENWIKI_GLEAN_EMAIL_ENV_KEY
-      ) {
-        const validationError = validateGleanWorkEmail(trimmedInput);
-        if (validationError) {
-          setError(validationError);
-          return;
-        }
+      const validationError = selectedSource.validateSecretInput?.(
+        currentSecretInput.envKey,
+        trimmedInput,
+      );
+      if (validationError) {
+        setError(validationError);
+        return;
       }
 
       const nextSecretValues = {
@@ -2944,30 +2922,27 @@ export function InitSetup({
         });
         await configureAuthProvider(authResult.provider, { force: false });
 
-        if (selectedSource.id === "glean") {
-          const email = process.env[OPENWIKI_GLEAN_EMAIL_ENV_KEY]?.trim();
-          if (email) {
-            setSourceState((state) => ({
-              ...state,
-              connectorConfig: { email },
-            }));
-          }
+        const connectorConfig =
+          selectedSource.resolveConnectorConfigAfterAuth?.();
+        if (connectorConfig) {
+          setSourceState((state) => ({
+            ...state,
+            connectorConfig,
+          }));
         }
       }
 
       setInput("");
       setStep("source-description");
     } catch (authError) {
-      if (
-        selectedSource.id === "glean" &&
-        authError instanceof GleanBackendResolutionError
-      ) {
-        const emailInputIndex = selectedSource.secretInputs.findIndex(
-          (secretInput) => secretInput.envKey === OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+      const retry = selectedSource.describeAuthFailure?.(authError);
+      if (retry) {
+        const retryInputIndex = selectedSource.secretInputs.findIndex(
+          (secretInput) => secretInput.envKey === retry.retryEnvKey,
         );
-        setError(getGleanBackendResolutionRetryMessage(authError));
-        setSecretInputIndex(emailInputIndex === -1 ? 0 : emailInputIndex);
-        setInput(process.env[OPENWIKI_GLEAN_EMAIL_ENV_KEY] ?? "");
+        setError(retry.message);
+        setSecretInputIndex(retryInputIndex === -1 ? 0 : retryInputIndex);
+        setInput(process.env[retry.retryEnvKey] ?? "");
         setStep("source-secret");
         return;
       }
@@ -5620,10 +5595,4 @@ function getStaticSourceConfig(
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function getGleanBackendResolutionRetryMessage(
-  error: GleanBackendResolutionError,
-): string {
-  return `${error.message} Please re-enter your work email and try again.`;
 }

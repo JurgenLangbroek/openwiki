@@ -13,8 +13,8 @@ import {
   nextSetupStep,
   orderedSetupSteps,
   resolveStepStatus,
-  validateGleanWorkEmail,
 } from "../src/credentials.tsx";
+import { GLEAN_SOURCE_OPTION } from "../src/connectors/sources/glean/setup.ts";
 import type { OpenWikiOnboardingConfig } from "../src/onboarding.ts";
 
 const ENV_KEYS = [
@@ -62,31 +62,44 @@ describe("needsCredentialSetup", () => {
   });
 });
 
-describe("validateGleanWorkEmail", () => {
-  test("accepts a work email with a resolvable company domain", () => {
-    expect(validateGleanWorkEmail("j@acme.example", {})).toBeNull();
-  });
-
-  test("returns actionable guidance for an unresolvable email", () => {
-    expect(validateGleanWorkEmail("j@localhost", {})).toMatch(
-      /Cannot resolve the Glean backend.*re-enter your work email/u,
-    );
-  });
-
-  test("accepts an email when the Glean instance override resolves the backend", () => {
-    expect(
-      validateGleanWorkEmail("j@localhost", {
-        OPENWIKI_GLEAN_INSTANCE: "acme",
-      }),
-    ).toBeNull();
-  });
-});
-
 describe("personal onboarding sources", () => {
   test("offers Glean", () => {
     expect(
       getTemplateSourceOptions("personal").map((source) => source.id),
     ).toContain("glean");
+  });
+
+  test("enumerates the personal sources in order, Glean among them", () => {
+    // The wiring most easily dropped when Glean's setup moves into its own
+    // module: the descriptor lives elsewhere now, so nothing but this list keeps
+    // Glean reachable in the wizard at all.
+    expect(
+      getTemplateSourceOptions("personal").map((source) => source.id),
+    ).toEqual([
+      "git-repo",
+      "notion",
+      "google",
+      "glean",
+      "web-search",
+      "hackernews",
+      "x",
+    ]);
+  });
+
+  test("takes its Glean entry from the Glean connector's setup module", () => {
+    // Not a copy of it: the same object. This is what makes the wizard's Glean
+    // footprint an import and an option entry (ADR-0004).
+    expect(getTemplateSourceOptions("personal")).toContain(GLEAN_SOURCE_OPTION);
+  });
+
+  test("validates a source's secret input through the source, naming no connector", () => {
+    const glean = getTemplateSourceOptions("personal").find(
+      (source) => source.id === "glean",
+    );
+
+    expect(
+      glean?.validateSecretInput?.("OPENWIKI_GLEAN_EMAIL", "j@localhost"),
+    ).toMatch(/Cannot resolve the Glean backend/u);
   });
 
   test("shows the Glean work email while it is entered", () => {
