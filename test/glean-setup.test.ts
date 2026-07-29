@@ -1,4 +1,6 @@
 import { describe, expect, test } from "vitest";
+import { validateOAuthEndpointUrl } from "../src/auth/oauth-discovery.ts";
+import { AUTH_PROVIDERS } from "../src/auth/providers.ts";
 import { GleanBackendResolutionError } from "../src/connectors/sources/glean-backend.ts";
 import {
   describeGleanAuthFailure,
@@ -91,6 +93,60 @@ describe("describeGleanAuthFailure", () => {
         "Cannot resolve the Glean backend. Please re-enter your work email and try again.",
       retryEnvKey: "OPENWIKI_GLEAN_EMAIL",
     });
+  });
+
+  test("translates a refused OAuth endpoint host into its actual remedy", () => {
+    // ADR-0005 confines Glean's OAuth endpoints to glean.com and names this step
+    // as the place to translate the refusal, which otherwise reaches the user as
+    // a bare "MCP protected resource URL host is not allowed." The error is
+    // produced here by the real validator with Glean's real allowed-host list, so
+    // a reworded upstream refusal fails this test rather than silently
+    // un-translating the message.
+    let refusal: unknown;
+    try {
+      validateOAuthEndpointUrl(
+        "https://glean.acme.example/mcp/default",
+        "MCP protected resource URL",
+        { allowedHosts: AUTH_PROVIDERS.glean.oauthAllowedHosts },
+      );
+    } catch (error) {
+      refusal = error;
+    }
+
+    const described = describeGleanAuthFailure(refusal);
+
+    expect(described?.retryEnvKey).toBe("OPENWIKI_GLEAN_EMAIL");
+    expect(described?.message).toContain("glean.com");
+    expect(described?.message).toContain("OPENWIKI_GLEAN_BACKEND_URL");
+    expect(described?.message).toContain("oauthAllowedHosts");
+    expect(described?.message).toMatch(/re-enter your work email/u);
+  });
+
+  test("translates the refusal under every endpoint label it can be raised with", () => {
+    // validateOAuthEndpointUrl raises the same refusal for each endpoint it
+    // checks, and which one fires first depends on the tenant's metadata, so the
+    // translation keys on the shared suffix rather than one label.
+    for (const label of [
+      "MCP protected resource URL",
+      "MCP protected resource metadata",
+      "OAuth authorization server issuer",
+      "OAuth authorization server metadata",
+      "token endpoint",
+    ]) {
+      expect(
+        describeGleanAuthFailure(new Error(`${label} host is not allowed.`)),
+      ).not.toBeNull();
+    }
+  });
+
+  test("leaves a different endpoint refusal to the wizard's generic report", () => {
+    // Same validator, different cause: nothing about the work email fixes an
+    // endpoint served over http, so re-prompting for it would be misleading.
+    expect(
+      describeGleanAuthFailure(
+        new Error("MCP protected resource URL must use https."),
+      ),
+    ).toBe(null);
   });
 
   test("leaves an unrelated authorization failure to the wizard's generic report", () => {

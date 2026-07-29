@@ -6,6 +6,7 @@ import {
 import type { AuthProviderId } from "../../../auth/types.js";
 import type { ConnectorId } from "../../types.js";
 import {
+  GLEAN_REGISTRABLE_DOMAIN,
   GleanBackendResolutionError,
   resolveGleanBackendUrl,
 } from "../glean-backend.js";
@@ -141,8 +142,22 @@ export function resolveGleanConnectorConfigAfterAuth(
  * Translates an authorization failure into a retryable prompt, or null to let the
  * wizard report it generically.
  *
+ * Two failures are worth translating, and they arrive from different places.
  * `GleanBackendResolutionError` means the backend could not be derived at all, so
- * the user's own input is the fix and the wizard re-prompts for it.
+ * the user's own input is the fix. A refused endpoint host means the backend
+ * resolved but sits off Glean's registrable domain, which ADR-0005 makes a
+ * deliberate refusal whose remedy is a code change; untranslated it reaches the
+ * user as a bare "MCP protected resource URL host is not allowed.", naming the
+ * cause and not the remedy. Everything else is left to the wizard's generic
+ * report, including the same validator's other refusals — no work email fixes an
+ * endpoint served over http, so re-prompting for one would mislead.
+ *
+ * The host refusal is a plain `Error` from upstream's `validateOAuthEndpointUrl`,
+ * raised under whichever of several endpoint labels the tenant's metadata reaches
+ * first, so it is recognised by the suffix all of them share rather than by any
+ * one label. A test drives the real validator and feeds its error through here,
+ * so a reworded upstream message fails that test instead of silently
+ * un-translating this.
  */
 export function describeGleanAuthFailure(
   error: unknown,
@@ -154,7 +169,20 @@ export function describeGleanAuthFailure(
     };
   }
 
+  if (isRefusedEndpointHostError(error)) {
+    return {
+      message: `Glean's OAuth endpoints must be on ${GLEAN_REGISTRABLE_DOMAIN}, and this deployment's are not. Clear ${OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY} to use your instance's ${GLEAN_REGISTRABLE_DOMAIN} backend, or add your custom domain to the Glean provider's oauthAllowedHosts in src/auth/providers.ts. Please re-enter your work email and try again.`,
+      retryEnvKey: OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+    };
+  }
+
   return null;
+}
+
+function isRefusedEndpointHostError(error: unknown): boolean {
+  return (
+    error instanceof Error && / host is not allowed\.$/u.test(error.message)
+  );
 }
 
 function getGleanBackendResolutionRetryMessage(
