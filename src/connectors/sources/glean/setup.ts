@@ -45,9 +45,20 @@ export type GleanAuthFailureReport = {
 /**
  * The subset of the wizard's `SourceSetupOption` this descriptor populates. It is
  * declared here, not imported from `credentials.tsx`, so the connector never
- * depends on the wizard; the wizard's own
- * `satisfies readonly SourceSetupOption[]` on `SOURCE_OPTIONS` is what proves the
- * two shapes still agree, and fails to compile if they drift.
+ * depends on the wizard.
+ *
+ * Two separate `satisfies` clauses in the wizard keep the duplicated shape honest,
+ * and it is worth knowing which does what. `SOURCE_OPTIONS`'
+ * `satisfies readonly SourceSetupOption[]` catches a field whose *type* drifts —
+ * including the return types of the hooks below. It does **not** catch a hook that
+ * is renamed or missing, because the hooks are optional there and TypeScript's
+ * excess-property check does not apply to an identifier. The narrower
+ * `satisfies Required<Pick<SourceSetupOption, …>>` on this descriptor's entry in
+ * that array is what closes that gap; it is load-bearing, not decoration, and
+ * mutation-tested from both sides.
+ *
+ * Neither can prove the wizard still *calls* a hook — no type does. That is
+ * unpinned: the wizard component is not rendered by any test.
  */
 interface GleanSourceOption {
   // `Extract` rather than the bare union: it proves "glean" is a real

@@ -403,7 +403,19 @@ const SOURCE_OPTIONS = [
       },
     ],
   },
-  GLEAN_SOURCE_OPTION,
+  // The array's own `satisfies` below cannot check that Glean still supplies every
+  // hook the wizard drives it through: the hooks are optional, and TypeScript's
+  // excess-property check does not apply to an identifier, so a hook renamed or
+  // dropped on either side of the seam would type-check and go silently uncalled.
+  // Requiring them here is what makes that a compile error instead.
+  GLEAN_SOURCE_OPTION satisfies Required<
+    Pick<
+      SourceSetupOption,
+      | "describeAuthFailure"
+      | "resolveConnectorConfigAfterAuth"
+      | "validateSecretInput"
+    >
+  >,
   {
     displayName: "Web Search (Tavily)",
     examples: [
