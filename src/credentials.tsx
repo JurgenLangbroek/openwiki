@@ -273,7 +273,11 @@ const ONBOARDING_TEMPLATES = [
     ],
     suggestedSources: [
       "Gmail",
-      "Glean (work context)",
+      // Read from the connector, not repeated: this screen promises a name the
+      // source menu then has to show. The sibling entries are upstream's and
+      // hardcode, but Glean's name belongs to Glean's setup module now, so there
+      // is a symbol to point at.
+      GLEAN_SOURCE_OPTION.displayName,
       "Notion",
       "Web Search (Tavily)",
       "Hacker News",
