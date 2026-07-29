@@ -97,9 +97,24 @@ type GleanConfig = GleanTargetConfig &
       transcriptDatasources?: string[];
     };
     messagingApps?: string[];
+    /**
+     * How fast the connector is allowed to talk to the tenant, in
+     * `~/.openwiki/connectors/glean/config.json`. It sets the rate gate's
+     * pacing interval (default 4/s) and applies to Glean's REST evidence
+     * requests, which are the ones the gate wraps. Anything non-finite or
+     * <= 0 falls back to the default.
+     */
     rateLimit?: {
       requestsPerSecond?: number;
     };
+    /**
+     * Wall-clock budget for a single Glean REST request, in the same config
+     * file (default 30,000 ms; anything non-finite or <= 0 falls back to it,
+     * and values above ~2.1e9 are clamped to the 32-bit timer ceiling). Lower
+     * it to fail faster against a tenant that accepts connections and then
+     * stops answering. It bounds one attempt, not the whole call: the rate gate
+     * may spend up to six of them on a request that keeps answering 429.
+     */
     requestTimeoutMs?: number;
     windowHours?: number;
   };
@@ -134,6 +149,14 @@ const DEFAULT_GLEAN_REQUESTS_PER_SECOND = 4;
  * many attempts a request gets, not how long one attempt may hang.
  */
 const DEFAULT_GLEAN_REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * `AbortSignal.timeout` inherits `setTimeout`'s 32-bit signed ceiling, and Node
+ * silently rewrites anything larger to **one millisecond**. A tenant config
+ * reaching past it for "effectively no timeout" would otherwise get the exact
+ * opposite: every request aborted, every stream failed, and the only clue a
+ * `TimeoutOverflowWarning` on stderr. Clamp to the ceiling instead.
+ */
+const MAX_GLEAN_REQUEST_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT = 3;
 const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   backfill: {
@@ -1032,7 +1055,7 @@ function normalizeRequestsPerSecond(value: unknown): number {
 
 function normalizeRequestTimeoutMs(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
+    ? Math.min(value, MAX_GLEAN_REQUEST_TIMEOUT_MS)
     : DEFAULT_GLEAN_REQUEST_TIMEOUT_MS;
 }
 
@@ -1443,7 +1466,11 @@ async function requestGleanJson(
     // internal service on one rate-limited call), and the helper's backoff
     // would sleep inside the gate's own pacing slot, defeating the throttle
     // that provoked the 429 in the first place. Only the per-attempt timeout
-    // is adopted here — the gate bounds attempts, not their duration.
+    // is adopted here — the gate bounds attempts, not their duration, so a
+    // request that both rate-limits and answers slowly can take up to
+    // 6 x `timeoutMs` (three minutes at the default) before the gate gives up.
+    // If that ever matters the fix is a run-level deadline, not a shorter
+    // per-request timeout.
     // Non-transient statuses pass straight through, so `postGleanJson` still
     // sees the 401 it refreshes on and `parseGleanJsonResponse` still sees the
     // 429 the gate reacts to.

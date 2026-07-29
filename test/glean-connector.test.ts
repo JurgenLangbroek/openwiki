@@ -68,7 +68,7 @@ function createEmptyGleanTransport() {
  */
 function stubGleanTenantFetch(
   overrides: {
-    mcp?: (init?: RequestInit) => Response | null;
+    mcp?: (input: { init?: RequestInit; pathname: string }) => Response | null;
     rest?: Record<string, (init?: RequestInit) => Response | Promise<Response>>;
   } = {},
 ): Map<string, number> {
@@ -98,7 +98,7 @@ function stubGleanTenantFetch(
           break;
       }
 
-      const mcpOverride = overrides.mcp?.(init);
+      const mcpOverride = overrides.mcp?.({ init, pathname });
       if (mcpOverride) {
         return mcpOverride;
       }
@@ -122,6 +122,32 @@ function stubGleanTenantFetch(
   );
 
   return attempts;
+}
+
+/**
+ * A stubbed reply that honors the request's `AbortSignal` the way a real
+ * `fetch` does — rejecting with the abort reason when it fires — so a test can
+ * tell a timeout that was applied from one that was not. Without
+ * `answerAfterMs` it never answers at all, which is the shape of an
+ * unresponsive tenant; the body it eventually answers with is feed-shaped.
+ */
+function replyHonoringAbort(
+  init: RequestInit | undefined,
+  answerAfterMs?: number,
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const answerTimer =
+      answerAfterMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            resolve(Response.json({ items: [] }));
+          }, answerAfterMs);
+    init?.signal?.addEventListener("abort", () => {
+      clearTimeout(answerTimer);
+      const reason: unknown = init.signal?.reason;
+      reject(reason instanceof Error ? reason : new Error(String(reason)));
+    });
+  });
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {
@@ -1406,20 +1432,11 @@ describe("Glean connector", () => {
       requestTimeoutMs: 25,
     });
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
-    // Answers nothing and settles only when the request's own timeout aborts
-    // it, which is the shape of an unresponsive tenant.
-    const neverAnswers = (init?: RequestInit) =>
-      new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => {
-          const reason: unknown = init.signal?.reason;
-          reject(reason instanceof Error ? reason : new Error(String(reason)));
-        });
-      });
     stubGleanTenantFetch({
       rest: {
-        "/rest/api/v1/feed": (init) => neverAnswers(init),
-        "/rest/api/v1/people": (init) => neverAnswers(init),
-        "/rest/api/v1/search": (init) => neverAnswers(init),
+        "/rest/api/v1/feed": (init) => replyHonoringAbort(init),
+        "/rest/api/v1/people": (init) => replyHonoringAbort(init),
+        "/rest/api/v1/search": (init) => replyHonoringAbort(init),
       },
     });
 
@@ -1440,21 +1457,54 @@ describe("Glean connector", () => {
     process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
     // Pins the helper's backoff jitter to zero so its one retry is instant.
     vi.spyOn(Math, "random").mockReturnValue(0);
-    let mcpAttempts = 0;
-    const attempts = stubGleanTenantFetch({
-      mcp: () => {
-        mcpAttempts += 1;
-        return mcpAttempts === 1 ? new Response(null, { status: 503 }) : null;
+    // Counts attempts of one exact JSON-RPC request rather than requests to the
+    // endpoint: how many requests the MCP handshake makes is upstream's
+    // business and may change, but a retried request is always the same request
+    // sent twice.
+    const initializeAttempts: string[] = [];
+    stubGleanTenantFetch({
+      mcp: ({ init, pathname }) => {
+        const { method } = JSON.parse(
+          typeof init?.body === "string" ? init.body : "{}",
+        ) as { method?: string };
+        if (pathname !== "/mcp/default" || method !== "initialize") {
+          return null;
+        }
+        initializeAttempts.push(pathname);
+        return initializeAttempts.length === 1
+          ? new Response(null, { status: 503 })
+          : null;
       },
     });
 
     const result = await createGleanConnector().ingest();
 
+    // The probe's first attempt was answered with a 503 and upstream's helper
+    // sent it again, so the tool catalog was still discovered.
+    expect(initializeAttempts).toHaveLength(2);
     expect(result.status).toBe("success");
-    // The probe's first attempt was answered with a 503 and the second
-    // succeeded, so the tool catalog was still discovered.
-    expect(attempts.get("/mcp/default")).toBe(4);
     expect(result.message).toMatch(/^Probed 2 MCP tool\(s\)/u);
+  });
+
+  test("keeps an oversized configured timeout from clamping to a millisecond", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+      // A user reaching for "effectively no timeout". `AbortSignal.timeout`
+      // inherits `setTimeout`'s 32-bit ceiling, so an unclamped value this
+      // size aborts after about a millisecond and fails every request.
+      requestTimeoutMs: 2_147_483_648,
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    stubGleanTenantFetch({
+      rest: { "/rest/api/v1/feed": (init) => replyHonoringAbort(init, 25) },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toEqual([]);
   });
 
   test("returns an authentication hint when the tenant probe fails", async () => {
