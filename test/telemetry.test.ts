@@ -28,10 +28,13 @@ import { classifyError } from "../src/telemetry/errors.ts";
 import {
   ciSentinelId,
   isCiEnvironment,
+  isProductionBuild,
   isTelemetryDisabled,
   noticeSuppressed,
 } from "../src/telemetry/gates.ts";
-import { recordRun } from "../src/telemetry/senders.ts";
+import { getOrCreateInstallId } from "../src/telemetry/install-id.ts";
+import { buildRunEvent, recordRun } from "../src/telemetry/senders.ts";
+import type { RunEventContext } from "../src/telemetry/senders.ts";
 import type { RunTelemetry } from "../src/telemetry/types.ts";
 import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
@@ -50,7 +53,9 @@ beforeEach(async () => {
   // `src/telemetry/install-id.ts` mkdirs and writes under the OpenWiki home for
   // real. The vitest home guard makes the developer's real home unreachable, so
   // this file must be given a throwaway one or every write fails ENOTDIR.
-  // Issue #75; #63 disables telemetry in code and may reshape this file.
+  // Still load-bearing after #63: `recordRun` no longer reaches the home (the
+  // gate stops it first), but the human-identity test below resolves the install
+  // id directly, which does.
   savedOpenWikiHome = process.env.OPENWIKI_HOME;
   tempHome = await useTempOpenWikiHome("openwiki-telemetry-");
 
@@ -140,24 +145,20 @@ describe("classifyError", () => {
 });
 
 describe("gates", () => {
-  test("isTelemetryDisabled honors both vars and the falsy set", () => {
-    expect(isTelemetryDisabled()).toBe(false);
-
-    process.env.OPENWIKI_TELEMETRY_DISABLED = "1";
+  test("isTelemetryDisabled does not honor either var: the fork closes it in code", () => {
+    // Upstream reads OPENWIKI_TELEMETRY_DISABLED / DO_NOT_TRACK here and
+    // otherwise sends. This fork's gate returns true unconditionally
+    // (docs/adr/0003-usage-telemetry-is-disabled-in-code.md), so neither
+    // variable is consulted — including with the values that used to mean
+    // "telemetry on". test/telemetry-disabled.test.ts pins this in full.
     expect(isTelemetryDisabled()).toBe(true);
-    delete process.env.OPENWIKI_TELEMETRY_DISABLED;
 
-    process.env.DO_NOT_TRACK = "true";
+    process.env.OPENWIKI_TELEMETRY_DISABLED = "0";
+    process.env.DO_NOT_TRACK = "0";
     expect(isTelemetryDisabled()).toBe(true);
-    delete process.env.DO_NOT_TRACK;
-
-    for (const falsy of ["0", "false", ""]) {
-      process.env.OPENWIKI_TELEMETRY_DISABLED = falsy;
-      expect(isTelemetryDisabled()).toBe(false);
-    }
   });
 
-  test("isCiEnvironment: ci-info OR the scheduled escape hatch", () => {
+  test("isCiEnvironment: ci-info OR the scheduled escape hatch, and its falsy set", () => {
     expect(isCiEnvironment()).toBe(false);
 
     ci.isCI = true;
@@ -166,6 +167,15 @@ describe("gates", () => {
 
     process.env.OPENWIKI_SCHEDULED = "1";
     expect(isCiEnvironment()).toBe(true);
+
+    // The shared env parsing counts these as not set. Upstream covered that
+    // through isTelemetryDisabled's vars, which this fork no longer reads, so
+    // the coverage moves to the other caller of the same helper rather than
+    // being lost.
+    for (const falsy of ["0", "false", ""]) {
+      process.env.OPENWIKI_SCHEDULED = falsy;
+      expect(isCiEnvironment()).toBe(false);
+    }
   });
 
   test("ciSentinelId slugs the provider name", () => {
@@ -177,12 +187,16 @@ describe("gates", () => {
     expect(ciSentinelId()).toBe("ci-unknown");
   });
 
-  test("noticeSuppressed is opt-out OR ci", () => {
-    expect(noticeSuppressed()).toBe(false);
-    ci.isCI = true;
+  test("noticeSuppressed is opt-out OR ci, and the opt-out limb is always true", () => {
+    // Upstream's first case is `false`: outside CI, with nothing set, the notice
+    // shows. Under the fork's gate the opt-out limb is unconditionally true, so
+    // the notice is suppressed on every path — asserted here against a
+    // non-CI environment so it is the opt-out limb doing it, not CI.
+    expect(isCiEnvironment()).toBe(false);
     expect(noticeSuppressed()).toBe(true);
-    ci.isCI = false;
-    process.env.OPENWIKI_TELEMETRY_DISABLED = "1";
+
+    // The CI limb still works as upstream intends.
+    ci.isCI = true;
     expect(noticeSuppressed()).toBe(true);
   });
 });
@@ -227,50 +241,6 @@ describe("senders.recordRun", () => {
     await rm(file, { force: true });
   });
 
-  test("human run uses the install id, ci=false, profile off", async () => {
-    const file = path.join(tmpdir(), "ow-tel-normal.json");
-
-    await recordRun(runDetails({ telemetryFile: file }));
-
-    const tee = (await readTee(file)) as {
-      ci: boolean;
-      sent: boolean;
-      event: {
-        distinctId: string;
-        properties: { ci: boolean; $process_person_profile: boolean };
-      };
-    };
-    expect(tee.ci).toBe(false);
-    expect(tee.sent).toBe(true);
-    expect(tee.event.distinctId).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(tee.event.properties.ci).toBe(false);
-    // Every run is anonymous: no person profile is ever created.
-    expect(tee.event.properties.$process_person_profile).toBe(false);
-    expect(posthog.captureImmediate).toHaveBeenCalledOnce();
-    await rm(file, { force: true });
-  });
-
-  test("CI run uses the sentinel id, ci=true, profile off", async () => {
-    process.env.OPENWIKI_SCHEDULED = "1";
-    const file = path.join(tmpdir(), "ow-tel-ci.json");
-
-    await recordRun(runDetails({ telemetryFile: file }));
-
-    const tee = (await readTee(file)) as {
-      ci: boolean;
-      event: {
-        distinctId: string;
-        properties: { ci: boolean; $process_person_profile: boolean };
-      };
-    };
-    expect(tee.ci).toBe(true);
-    expect(tee.event.distinctId).toBe("ci-unknown");
-    expect(tee.event.properties.ci).toBe(true);
-    // CI stays anonymous (no person profile).
-    expect(tee.event.properties.$process_person_profile).toBe(false);
-    await rm(file, { force: true });
-  });
-
   test("never throws even if capture fails", async () => {
     posthog.captureImmediate.mockImplementation(() => {
       throw new Error("boom");
@@ -292,52 +262,101 @@ describe("getConfiguredConnectorIds", () => {
   });
 });
 
-describe("recordRun connector properties", () => {
-  function runEvent(): { event: string; properties: Record<string, unknown> } {
-    return posthog.captureImmediate.mock.calls[0]?.[0] as {
-      event: string;
-      properties: Record<string, unknown>;
-    };
+/*
+ * Upstream drove the assertions below through `recordRun` and read the event
+ * back off the PostHog mock or the tee. This fork's gate returns before
+ * `recordRun` resolves an identity or builds an event
+ * (docs/adr/0003-usage-telemetry-is-disabled-in-code.md), so the composition can
+ * no longer be exercised end to end. The tests are kept rather than deleted, and
+ * re-pointed at the parts upstream had already factored out: the pure payload
+ * builder `buildRunEvent` (which is upstream's own single source of truth for
+ * the payload, shared with its seed script), the two identity sources, and
+ * `isProductionBuild`. `capture` keeps its own coverage above.
+ *
+ * They are deliberately NOT made to pass by mocking the fork's gate away: they
+ * describe what the send path would send, so an upstream change to the payload
+ * still breaks a test here, while nothing here can be misread as evidence that
+ * telemetry fires. That it does not fire is test/telemetry-disabled.test.ts.
+ */
+describe("the run event the send path would send", () => {
+  function context(overrides: Partial<RunEventContext> = {}): RunEventContext {
+    return { ci: false, production: false, distinctId: "id-1", ...overrides };
   }
 
-  test("configured connectors become boolean connector_<id> properties", async () => {
-    await recordRun(
-      runDetails({ configuredConnectors: ["web-search", "notion"] }),
+  test("human run uses the install id, ci=false, profile off", async () => {
+    const { id } = await getOrCreateInstallId();
+    expect(id).toMatch(/^[0-9a-f-]{36}$/i);
+
+    const event = buildRunEvent(runDetails(), context({ distinctId: id }));
+
+    expect(event.distinctId).toBe(id);
+    expect(event.properties.ci).toBe(false);
+    // Every run is anonymous: no person profile is ever created.
+    expect(event.properties.$process_person_profile).toBe(false);
+  });
+
+  test("CI run uses the sentinel id, ci=true, profile off", () => {
+    process.env.OPENWIKI_SCHEDULED = "1";
+    expect(isCiEnvironment()).toBe(true);
+
+    const event = buildRunEvent(
+      runDetails(),
+      context({ ci: true, distinctId: ciSentinelId() }),
     );
 
-    const arg = runEvent();
-    expect(arg.event).toBe("openwiki_run");
+    expect(event.distinctId).toBe("ci-unknown");
+    expect(event.properties.ci).toBe(true);
+    // CI stays anonymous (no person profile).
+    expect(event.properties.$process_person_profile).toBe(false);
+  });
+
+  test("configured connectors become boolean connector_<id> properties", () => {
+    const event = buildRunEvent(
+      runDetails({ configuredConnectors: ["web-search", "notion"] }),
+      context(),
+    );
+
+    expect(event.event).toBe("openwiki_run");
     // Hyphens are normalized to underscores; only configured ones appear.
-    expect(arg.properties).toMatchObject({
+    expect(event.properties).toMatchObject({
       connector_web_search: true,
       connector_notion: true,
     });
-    expect(arg.properties).not.toHaveProperty("connector_slack");
+    expect(event.properties).not.toHaveProperty("connector_slack");
   });
 
-  test("no connector_ properties when nothing is configured", async () => {
-    await recordRun(runDetails({ configuredConnectors: [] }));
+  test("no connector_ properties when nothing is configured", () => {
+    const props = buildRunEvent(
+      runDetails({ configuredConnectors: [] }),
+      context(),
+    ).properties;
 
-    const props = runEvent().properties;
     expect(Object.keys(props).some((key) => key.startsWith("connector_"))).toBe(
       false,
     );
   });
 
-  test("stamps production=false when running from source (dev/test)", async () => {
+  test("stamps production=false when running from source (dev/test)", () => {
     // Tests import from src/, so isProductionBuild() (dist/ check) is false;
     // the published build runs from dist/ and would send production=true.
-    await recordRun(runDetails());
+    expect(isProductionBuild()).toBe(false);
 
-    expect(runEvent().properties.production).toBe(false);
+    const props = buildRunEvent(
+      runDetails(),
+      context({ production: isProductionBuild() }),
+    ).properties;
+
+    expect(props.production).toBe(false);
   });
 
-  test("update runs omit the init-only setup fields", async () => {
+  test("update runs omit the init-only setup fields", () => {
     // The agent only sets mode/provider/connectors on init; an update payload
     // built without them must not carry mode/provider/connector_ properties.
-    await recordRun({ command: "update", outcome: "success" });
+    const props = buildRunEvent(
+      { command: "update", outcome: "success" },
+      context(),
+    ).properties;
 
-    const props = runEvent().properties;
     expect(props).not.toHaveProperty("mode");
     expect(props).not.toHaveProperty("provider");
     expect(Object.keys(props).some((key) => key.startsWith("connector_"))).toBe(
