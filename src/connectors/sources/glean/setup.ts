@@ -30,13 +30,16 @@ import {
  */
 
 /**
- * A retryable setup failure: what to tell the user, and which secret input to
- * send them back to. Structural rather than imported from the wizard, so the
+ * What to tell the user about a setup failure, and — only when re-entering it can
+ * actually clear the failure — which secret input to send them back to. Absent
+ * `retryEnvKey` means the remedy is not reachable from the wizard: report the
+ * message where the failure happened rather than bouncing the user to an input
+ * that cannot fix it. Structural rather than imported from the wizard, so the
  * dependency runs one way (wizard -> connector).
  */
-export type GleanSetupRetry = {
+export type GleanAuthFailureReport = {
   message: string;
-  retryEnvKey: string;
+  retryEnvKey?: string;
 };
 
 /**
@@ -59,7 +62,7 @@ interface GleanSourceOption {
   secretInputs: { envKey: string; label: string; secret: boolean }[];
   validateSecretInput: (envKey: string, value: string) => string | null;
   resolveConnectorConfigAfterAuth: () => Record<string, unknown> | undefined;
-  describeAuthFailure: (error: unknown) => GleanSetupRetry | null;
+  describeAuthFailure: (error: unknown) => GleanAuthFailureReport | null;
 }
 
 /**
@@ -139,18 +142,29 @@ export function resolveGleanConnectorConfigAfterAuth(
 }
 
 /**
- * Translates an authorization failure into a retryable prompt, or null to let the
- * wizard report it generically.
+ * Explains an authorization failure, and says whether re-entering a secret input
+ * can clear it. Null leaves the failure to the wizard's generic report.
  *
- * Two failures are worth translating, and they arrive from different places.
+ * Two failures are worth explaining, they arrive from different places, and
+ * crucially only one of them is the user's to fix here.
+ *
  * `GleanBackendResolutionError` means the backend could not be derived at all, so
- * the user's own input is the fix. A refused endpoint host means the backend
- * resolved but sits off Glean's registrable domain, which ADR-0005 makes a
- * deliberate refusal whose remedy is a code change; untranslated it reaches the
- * user as a bare "MCP protected resource URL host is not allowed.", naming the
- * cause and not the remedy. Everything else is left to the wizard's generic
- * report, including the same validator's other refusals — no work email fixes an
- * endpoint served over http, so re-prompting for one would mislead.
+ * the work email genuinely is the fix and this one re-prompts for it.
+ *
+ * A refused endpoint host means the backend resolved but sits off Glean's
+ * registrable domain, which ADR-0005 makes a deliberate refusal whose remedy is a
+ * code change. Untranslated it reaches the user as a bare
+ * "MCP protected resource URL host is not allowed.", naming the cause and not the
+ * remedy — but it names **no retry target**, because re-entering the work email
+ * provably cannot clear it: an off-domain host is only reachable through
+ * `OPENWIKI_GLEAN_BACKEND_URL` or a connector-config `backendBaseUrl`, and
+ * `resolveGleanBackendUrl` returns on that override before it ever reads the
+ * email. Naming the email anyway bounced the user between the authorize and
+ * secret-input steps with no exit. Both remedies the message gives live outside
+ * the wizard, so the failure is reported where it happened.
+ *
+ * Everything else is left to the generic report, including the same validator's
+ * other refusals — no work email fixes an endpoint served over http either.
  *
  * The host refusal is a plain `Error` from upstream's `validateOAuthEndpointUrl`,
  * raised under whichever of several endpoint labels the tenant's metadata reaches
@@ -161,7 +175,7 @@ export function resolveGleanConnectorConfigAfterAuth(
  */
 export function describeGleanAuthFailure(
   error: unknown,
-): GleanSetupRetry | null {
+): GleanAuthFailureReport | null {
   if (error instanceof GleanBackendResolutionError) {
     return {
       message: getGleanBackendResolutionRetryMessage(error),
@@ -171,8 +185,7 @@ export function describeGleanAuthFailure(
 
   if (isRefusedEndpointHostError(error)) {
     return {
-      message: `Glean's OAuth endpoints must be on ${GLEAN_REGISTRABLE_DOMAIN}, and this deployment's are not. Clear ${OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY} to use your instance's ${GLEAN_REGISTRABLE_DOMAIN} backend, or add your custom domain to the Glean provider's oauthAllowedHosts in src/auth/providers.ts. Please re-enter your work email and try again.`,
-      retryEnvKey: OPENWIKI_GLEAN_EMAIL_ENV_KEY,
+      message: `Glean's OAuth endpoints must be on ${GLEAN_REGISTRABLE_DOMAIN}, and this deployment's are not. Clear ${OPENWIKI_GLEAN_BACKEND_URL_ENV_KEY} to use your instance's ${GLEAN_REGISTRABLE_DOMAIN} backend, or add your custom domain to the Glean provider's oauthAllowedHosts in src/auth/providers.ts.`,
     };
   }
 

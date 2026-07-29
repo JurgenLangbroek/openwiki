@@ -181,10 +181,10 @@ type SourceSetupOption = {
    */
   resolveConnectorConfigAfterAuth?: () => Record<string, unknown> | undefined;
   /**
-   * Turns an authorization failure into a retryable secret-input prompt, or null
-   * to let the generic error report handle it.
+   * Explains an authorization failure in the connector's own terms, or null to let
+   * the generic error report handle it.
    */
-  describeAuthFailure?: (error: unknown) => SourceAuthRetry | null;
+  describeAuthFailure?: (error: unknown) => SourceAuthFailureReport | null;
 };
 
 type SourceSecretInput = {
@@ -195,12 +195,15 @@ type SourceSecretInput = {
 };
 
 /**
- * A connector's translation of an authorization failure: what to show, and which
- * secret input to send the user back to.
+ * A connector's translation of an authorization failure: what to show, and — only
+ * when re-entering it can actually clear the failure — which secret input to send
+ * the user back to. A report with no `retryEnvKey` is shown on the authorize step
+ * and goes no further: sending the user back to an input that cannot change the
+ * outcome is a loop, not a retry.
  */
-type SourceAuthRetry = {
+type SourceAuthFailureReport = {
   message: string;
-  retryEnvKey: string;
+  retryEnvKey?: string;
 };
 
 type SourceSetupState = {
@@ -2935,15 +2938,23 @@ export function InitSetup({
       setInput("");
       setStep("source-description");
     } catch (authError) {
-      const retry = selectedSource.describeAuthFailure?.(authError);
-      if (retry) {
-        const retryInputIndex = selectedSource.secretInputs.findIndex(
-          (secretInput) => secretInput.envKey === retry.retryEnvKey,
-        );
-        setError(retry.message);
-        setSecretInputIndex(retryInputIndex === -1 ? 0 : retryInputIndex);
-        setInput(process.env[retry.retryEnvKey] ?? "");
-        setStep("source-secret");
+      const report = selectedSource.describeAuthFailure?.(authError);
+      if (report) {
+        setError(report.message);
+
+        // Only go back to an input when re-entering it can change the outcome.
+        // Without a retry target the explanation is all there is, so it stays on
+        // this step rather than bouncing the user to a prompt whose value the
+        // failure does not depend on.
+        if (report.retryEnvKey !== undefined) {
+          const retryInputIndex = selectedSource.secretInputs.findIndex(
+            (secretInput) => secretInput.envKey === report.retryEnvKey,
+          );
+          setSecretInputIndex(retryInputIndex === -1 ? 0 : retryInputIndex);
+          setInput(process.env[report.retryEnvKey] ?? "");
+          setStep("source-secret");
+        }
+
         return;
       }
 

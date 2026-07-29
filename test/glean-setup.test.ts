@@ -63,6 +63,43 @@ describe("GLEAN_SOURCE_OPTION", () => {
       ),
     ).toBeNull();
   });
+
+  test("explains an authorization failure through the descriptor", () => {
+    // Reached the way the wizard reaches it. The wizard component is not rendered
+    // by any test, so a hook that is wired to the wrong function — or to nothing —
+    // is only visible here.
+    expect(
+      GLEAN_SOURCE_OPTION.describeAuthFailure?.(
+        new GleanBackendResolutionError("Cannot resolve the Glean backend."),
+      ),
+    ).toEqual({
+      message:
+        "Cannot resolve the Glean backend. Please re-enter your work email and try again.",
+      retryEnvKey: "OPENWIKI_GLEAN_EMAIL",
+    });
+  });
+
+  test("resolves the post-authorization connector config through the descriptor", () => {
+    const original = process.env.OPENWIKI_GLEAN_EMAIL;
+
+    try {
+      process.env.OPENWIKI_GLEAN_EMAIL = "j@acme.example";
+      expect(GLEAN_SOURCE_OPTION.resolveConnectorConfigAfterAuth?.()).toEqual({
+        email: "j@acme.example",
+      });
+
+      delete process.env.OPENWIKI_GLEAN_EMAIL;
+      expect(
+        GLEAN_SOURCE_OPTION.resolveConnectorConfigAfterAuth?.(),
+      ).toBeUndefined();
+    } finally {
+      if (original === undefined) {
+        delete process.env.OPENWIKI_GLEAN_EMAIL;
+      } else {
+        process.env.OPENWIKI_GLEAN_EMAIL = original;
+      }
+    }
+  });
 });
 
 describe("resolveGleanConnectorConfigAfterAuth", () => {
@@ -115,11 +152,34 @@ describe("describeGleanAuthFailure", () => {
 
     const described = describeGleanAuthFailure(refusal);
 
-    expect(described?.retryEnvKey).toBe("OPENWIKI_GLEAN_EMAIL");
     expect(described?.message).toContain("glean.com");
     expect(described?.message).toContain("OPENWIKI_GLEAN_BACKEND_URL");
     expect(described?.message).toContain("oauthAllowedHosts");
-    expect(described?.message).toMatch(/re-enter your work email/u);
+  });
+
+  test("names no retry target for a refusal the user cannot clear from the wizard", () => {
+    // An off-glean.com OAuth host is only reachable through
+    // OPENWIKI_GLEAN_BACKEND_URL / a connector-config backendBaseUrl, and
+    // resolveGleanBackendUrl returns on that override before it ever reads the
+    // email. So re-entering the work email cannot clear this refusal, and naming
+    // it as the retry target bounced the user between source-auth and
+    // source-secret with no exit but Ctrl-C. Both remedies the message gives live
+    // outside the wizard, so the failure is reported where it happened.
+    const described = describeGleanAuthFailure(
+      new Error("MCP protected resource URL host is not allowed."),
+    );
+
+    expect(described?.retryEnvKey).toBeUndefined();
+    expect(described?.message).not.toMatch(/re-enter your work email/u);
+  });
+
+  test("still names the work email for the one failure re-entering it can clear", () => {
+    // The contrast that makes the distinction load-bearing: an unresolvable
+    // backend is the user's own input, so that one does re-prompt.
+    expect(
+      describeGleanAuthFailure(new GleanBackendResolutionError("Nope."))
+        ?.retryEnvKey,
+    ).toBe("OPENWIKI_GLEAN_EMAIL");
   });
 
   test("translates the refusal under every endpoint label it can be raised with", () => {
