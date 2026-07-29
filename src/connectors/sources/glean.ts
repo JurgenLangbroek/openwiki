@@ -16,6 +16,7 @@ import {
   isMcpEndpointUnavailableError,
 } from "../mcp-errors.js";
 import { listMcpTools, type McpToolDescriptor } from "../mcp-client.js";
+import { fetchWithResilience } from "../http.js";
 import { annotateToolsWithPolicy } from "../tool-policy.js";
 import { writeToolCatalog } from "../tool-catalog.js";
 import {
@@ -99,6 +100,7 @@ type GleanConfig = GleanTargetConfig &
     rateLimit?: {
       requestsPerSecond?: number;
     };
+    requestTimeoutMs?: number;
     windowHours?: number;
   };
 
@@ -126,6 +128,12 @@ const DEFAULT_BACKFILL_CONFIG: SliceWalkConfig = {
   sliceDays: 30,
 };
 const DEFAULT_GLEAN_REQUESTS_PER_SECOND = 4;
+/**
+ * Wall-clock budget for one Glean JSON request. Without it an unresponsive
+ * tenant stalls the whole ingestion run: the fork's own rate gate bounds how
+ * many attempts a request gets, not how long one attempt may hang.
+ */
+const DEFAULT_GLEAN_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CONTENT_EXPANSION_TOTAL_FAILURE_SLICE_LIMIT = 3;
 const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   backfill: {
@@ -141,6 +149,7 @@ const DEFAULT_GLEAN_CONFIG: GleanConfig = {
   mcpPath: "/mcp/default",
   messagingApps: ["slack"],
   rateLimit: { requestsPerSecond: DEFAULT_GLEAN_REQUESTS_PER_SECOND },
+  requestTimeoutMs: DEFAULT_GLEAN_REQUEST_TIMEOUT_MS,
   windowHours: 48,
 };
 const sharedGleanRateGate: RateGate = createRateGate({
@@ -877,7 +886,11 @@ async function prepareGleanLiveTools(
     normalizeRequestsPerSecond(config.rateLimit?.requestsPerSecond),
   );
   const transport =
-    transportOverride ?? createDefaultTransport(config.messagingApps);
+    transportOverride ??
+    createDefaultTransport({
+      messagingApps: config.messagingApps,
+      requestTimeoutMs: normalizeRequestTimeoutMs(config.requestTimeoutMs),
+    });
 
   if (config.enabled !== true) {
     return {
@@ -1015,6 +1028,12 @@ function normalizeRequestsPerSecond(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : DEFAULT_GLEAN_REQUESTS_PER_SECOND;
+}
+
+function normalizeRequestTimeoutMs(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_GLEAN_REQUEST_TIMEOUT_MS;
 }
 
 async function resolveGleanMcpConfig(
@@ -1220,46 +1239,65 @@ type BackfillStreamPullResult = {
   succeeded: boolean;
 };
 
-function createDefaultTransport(
-  messagingApps: string[] | undefined,
-): GleanProbeTransport {
+function createDefaultTransport({
+  messagingApps,
+  requestTimeoutMs: timeoutMs,
+}: {
+  messagingApps: string[] | undefined;
+  requestTimeoutMs: number;
+}): GleanProbeTransport {
   const apps = normalizeMessagingApps(messagingApps);
 
   return {
     fetchAuthPreflight: async ({ backendUrl }) =>
-      await postGleanJson(backendUrl, "/rest/api/v1/getdocuments", {
-        documentSpecs: [],
-      }),
+      await postGleanJson(
+        backendUrl,
+        "/rest/api/v1/getdocuments",
+        { documentSpecs: [] },
+        timeoutMs,
+      ),
     fetchCalendar: async ({ backendUrl }) =>
-      await postGleanJson(backendUrl, "/rest/api/v1/people", {
-        includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"],
-      }),
+      await postGleanJson(
+        backendUrl,
+        "/rest/api/v1/people",
+        { includeFields: ["BUSY_EVENTS", "DOCUMENT_ACTIVITY"] },
+        timeoutMs,
+      ),
     fetchExpansion: async ({ backendUrl, item }) =>
-      await postGleanJson(backendUrl, "/rest/api/v1/getdocuments", {
-        documentSpecs: [{ id: item.id }],
-        includeFields: ["DOCUMENT_CONTENT"],
-      }),
+      await postGleanJson(
+        backendUrl,
+        "/rest/api/v1/getdocuments",
+        {
+          documentSpecs: [{ id: item.id }],
+          includeFields: ["DOCUMENT_CONTENT"],
+        },
+        timeoutMs,
+      ),
     fetchFeed: async ({ backendUrl }) =>
-      await postGleanJson(backendUrl, "/rest/api/v1/feed", {
-        categories: FEED_CATEGORIES,
-      }),
+      await postGleanJson(
+        backendUrl,
+        "/rest/api/v1/feed",
+        { categories: FEED_CATEGORIES },
+        timeoutMs,
+      ),
     fetchMessages: async ({ backendUrl, sinceDate, untilDate }) =>
       mergeSearchResponses(
         await Promise.all(
           apps.map(
             async (app) =>
-              await fetchGleanSearch(
+              await fetchGleanSearch({
                 backendUrl,
-                "",
-                sinceDate,
-                [
+                facetFilters: [
                   {
                     fieldName: "app",
                     values: [{ relationType: "EQUALS", value: app }],
                   },
                 ],
+                query: "",
+                sinceDate,
+                timeoutMs,
                 untilDate,
-              ),
+              }),
           ),
         ),
       ),
@@ -1268,13 +1306,13 @@ function createDefaultTransport(
         await Promise.all(
           ['owner:"me"', 'from:"me"'].map(
             async (query) =>
-              await fetchGleanSearch(
+              await fetchGleanSearch({
                 backendUrl,
                 query,
                 sinceDate,
-                [],
+                timeoutMs,
                 untilDate,
-              ),
+              }),
           ),
         ),
       ),
@@ -1304,35 +1342,49 @@ function isInsufficientScopeError(error: unknown): boolean {
   return readErrorReason(error).includes("insufficient_scope");
 }
 
-async function fetchGleanSearch(
-  backendUrl: string,
-  query: string,
-  sinceDate: string,
-  facetFilters: GleanSearchFacetFilter[] = [],
-  untilDate?: string,
-): Promise<unknown> {
-  return await postGleanJson(backendUrl, "/rest/api/v1/search", {
-    pageSize: GLEAN_SEARCH_PAGE_SIZE,
-    query,
-    requestOptions: {
-      facetFilters: [
-        {
-          fieldName: "last_updated_at",
-          values: [
-            { relationType: "GT", value: sinceDate },
-            ...(untilDate ? [{ relationType: "LT", value: untilDate }] : []),
-          ],
-        },
-        ...facetFilters,
-      ],
+async function fetchGleanSearch({
+  backendUrl,
+  facetFilters = [],
+  query,
+  sinceDate,
+  timeoutMs,
+  untilDate,
+}: {
+  backendUrl: string;
+  facetFilters?: GleanSearchFacetFilter[];
+  query: string;
+  sinceDate: string;
+  timeoutMs: number;
+  untilDate?: string;
+}): Promise<unknown> {
+  return await postGleanJson(
+    backendUrl,
+    "/rest/api/v1/search",
+    {
+      pageSize: GLEAN_SEARCH_PAGE_SIZE,
+      query,
+      requestOptions: {
+        facetFilters: [
+          {
+            fieldName: "last_updated_at",
+            values: [
+              { relationType: "GT", value: sinceDate },
+              ...(untilDate ? [{ relationType: "LT", value: untilDate }] : []),
+            ],
+          },
+          ...facetFilters,
+        ],
+      },
     },
-  });
+    timeoutMs,
+  );
 }
 
 async function postGleanJson(
   backendUrl: string,
   pathname: string,
   body: JsonObject,
+  timeoutMs: number,
 ): Promise<unknown> {
   return await sharedGleanRateGate.run(async () => {
     const accessToken = process.env[OPENWIKI_GLEAN_ACCESS_TOKEN_ENV_KEY];
@@ -1345,6 +1397,7 @@ async function postGleanJson(
       pathname,
       body,
       accessToken,
+      timeoutMs,
     );
     if (response.status !== 401) {
       return await parseGleanJsonResponse(response, pathname);
@@ -1352,7 +1405,13 @@ async function postGleanJson(
 
     const refreshedToken = await refreshOAuthAccessToken("glean");
     return await parseGleanJsonResponse(
-      await requestGleanJson(backendUrl, pathname, body, refreshedToken),
+      await requestGleanJson(
+        backendUrl,
+        pathname,
+        body,
+        refreshedToken,
+        timeoutMs,
+      ),
       pathname,
     );
   });
@@ -1363,15 +1422,33 @@ async function requestGleanJson(
   pathname: string,
   body: JsonObject,
   accessToken: string,
+  timeoutMs: number,
 ): Promise<Response> {
-  return await fetch(`${backendUrl}${pathname}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
+  return await fetchWithResilience(
+    `${backendUrl}${pathname}`,
+    {
+      body: JSON.stringify(body),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
     },
-    method: "POST",
-  });
+    // `maxRetries: 0` is deliberate, not an oversight. Every call on this path
+    // runs inside `sharedGleanRateGate`, which is the fork's sole authority for
+    // rate-limit retry: it is the component that paces requests and that
+    // reports rate-limit outcomes to the Run Ledger and the Content Expansion
+    // tripwire. Letting this helper retry as well would multiply the two
+    // budgets (6 gate attempts x 4 helper attempts = 24 requests against an
+    // internal service on one rate-limited call), and the helper's backoff
+    // would sleep inside the gate's own pacing slot, defeating the throttle
+    // that provoked the 429 in the first place. Only the per-attempt timeout
+    // is adopted here — the gate bounds attempts, not their duration.
+    // Non-transient statuses pass straight through, so `postGleanJson` still
+    // sees the 401 it refreshes on and `parseGleanJsonResponse` still sees the
+    // 429 the gate reacts to.
+    { maxRetries: 0, timeoutMs },
+  );
 }
 
 async function parseGleanJsonResponse(

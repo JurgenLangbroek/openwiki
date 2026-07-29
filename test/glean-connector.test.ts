@@ -59,6 +59,71 @@ function createEmptyGleanTransport() {
   };
 }
 
+/**
+ * Stubs `fetch` for a reachable Glean tenant: the MCP endpoints answer a
+ * one-tool catalog and the REST evidence endpoints answer empty streams, so a
+ * test only has to describe the request it wants to go wrong. Returns a live
+ * count of attempts per request pathname — attempts, not calls, so a retry
+ * anywhere beneath the connector shows up.
+ */
+function stubGleanTenantFetch(
+  overrides: {
+    mcp?: (init?: RequestInit) => Response | null;
+    rest?: Record<string, (init?: RequestInit) => Response | Promise<Response>>;
+  } = {},
+): Map<string, number> {
+  const attempts = new Map<string, number>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const { pathname } = new URL(
+        input instanceof Request ? input.url : input.toString(),
+      );
+      attempts.set(pathname, (attempts.get(pathname) ?? 0) + 1);
+
+      const restOverride = overrides.rest?.[pathname];
+      if (restOverride) {
+        return await restOverride(init);
+      }
+
+      switch (pathname) {
+        case "/rest/api/v1/feed":
+          return Response.json({ items: [] });
+        case "/rest/api/v1/getdocuments":
+          return Response.json({ documents: {} });
+        case "/rest/api/v1/people":
+        case "/rest/api/v1/search":
+          return Response.json({ results: [] });
+        default:
+          break;
+      }
+
+      const mcpOverride = overrides.mcp?.(init);
+      if (mcpOverride) {
+        return mcpOverride;
+      }
+
+      const request = JSON.parse(
+        typeof init?.body === "string" ? init.body : "{}",
+      ) as { id?: number; method?: string };
+      if (request.id === undefined) {
+        return new Response(null, { status: 202 });
+      }
+
+      return Response.json({
+        id: request.id,
+        jsonrpc: "2.0",
+        result:
+          request.method === "tools/list"
+            ? { tools: [{ name: "search" }] }
+            : {},
+      });
+    }),
+  );
+
+  return attempts;
+}
+
 function parseJsonObject(text: string): Record<string, unknown> {
   const value = JSON.parse(text) as unknown;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -77,6 +142,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
@@ -1259,6 +1325,136 @@ describe("Glean connector", () => {
       "Bearer expired-access-token",
       "Bearer refreshed-access-token",
     ]);
+  });
+
+  test("attempts a rate-limited request six times in total — the rate gate's maxRetries of 5 plus the initial attempt — because no second retry layer sits beneath the gate", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // The gate's retry delay is `max(Retry-After, random * ceiling)`. Pinning
+    // the jitter to zero makes the six attempts instant; it cannot change how
+    // many of them there are, which is what this test counts.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const attempts = stubGleanTenantFetch({
+      rest: { "/rest/api/v1/feed": () => new Response(null, { status: 429 }) },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(attempts.get("/rest/api/v1/feed")).toBe(6);
+    // The other three streams answered, so the run still lands, and the
+    // rate-limit outcome reaches the Run Ledger instead of being retried away
+    // underneath the gate.
+    expect(result.status).toBe("success");
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/Glean feed pull failed:.*429/u),
+    );
+    const feedPullEvent = result.ledgerEvents?.find(
+      (event) => event.type === "pull" && event.stream === "feed",
+    );
+    expect(feedPullEvent).toMatchObject({
+      counts: { deduplicated: 0, fetched: 0, new: 0 },
+      stream: "feed",
+      type: "pull",
+    });
+    expect(
+      feedPullEvent?.type === "pull" ? feedPullEvent.error : undefined,
+    ).toMatch(/429/u);
+  });
+
+  test("still paces the interval between a rate-limited request's attempts", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 100 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // With the retry backoff pinned to zero, pacing is the only thing left
+    // that can space the attempts out: an inner retry layer would have slept
+    // inside the gate's pacing slot instead.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const feedAttemptTimes: number[] = [];
+    stubGleanTenantFetch({
+      rest: {
+        "/rest/api/v1/feed": () => {
+          feedAttemptTimes.push(performance.now());
+          return new Response(null, { status: 429 });
+        },
+      },
+    });
+
+    await createGleanConnector().ingest();
+
+    expect(feedAttemptTimes).toHaveLength(6);
+    const intervals = feedAttemptTimes
+      .slice(1)
+      .map((time, index) => time - feedAttemptTimes[index]);
+    // 100 requests per second is a 10ms interval; assert well below it so a
+    // slow machine cannot fail the test, but far enough above zero that an
+    // unpaced retry loop does.
+    expect(intervals.filter((interval) => interval >= 5)).toHaveLength(5);
+  });
+
+  test("times an unresponsive tenant out instead of stalling the run", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+      requestTimeoutMs: 25,
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // Answers nothing and settles only when the request's own timeout aborts
+    // it, which is the shape of an unresponsive tenant.
+    const neverAnswers = (init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const reason: unknown = init.signal?.reason;
+          reject(reason instanceof Error ? reason : new Error(String(reason)));
+        });
+      });
+    stubGleanTenantFetch({
+      rest: {
+        "/rest/api/v1/feed": (init) => neverAnswers(init),
+        "/rest/api/v1/people": (init) => neverAnswers(init),
+        "/rest/api/v1/search": (init) => neverAnswers(init),
+      },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("error");
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/Glean feed pull failed:.*timeout/iu),
+    );
+  });
+
+  test("lets the Capability Probe, which the gate does not wrap, retry a transient failure through upstream's helper", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // Pins the helper's backoff jitter to zero so its one retry is instant.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    let mcpAttempts = 0;
+    const attempts = stubGleanTenantFetch({
+      mcp: () => {
+        mcpAttempts += 1;
+        return mcpAttempts === 1 ? new Response(null, { status: 503 }) : null;
+      },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    // The probe's first attempt was answered with a 503 and the second
+    // succeeded, so the tool catalog was still discovered.
+    expect(attempts.get("/mcp/default")).toBe(4);
+    expect(result.message).toMatch(/^Probed 2 MCP tool\(s\)/u);
   });
 
   test("returns an authentication hint when the tenant probe fails", async () => {
