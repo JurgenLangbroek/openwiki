@@ -4,3 +4,6 @@ node_modules
 *.tgz
 pnpm-lock.yaml
 personal-brain/
+.ok/
+.pi/
+.claude/settings.local.json
