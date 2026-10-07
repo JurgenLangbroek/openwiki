@@ -30,6 +30,14 @@ export class GleanBackendResolutionError extends Error {
   }
 }
 
+/**
+ * The registrable domain every hosted Glean deployment lives under. It is both
+ * the suffix `createGleanBackendUrl` builds instance-derived backend hosts on
+ * (`<instance>-be.glean.com`) and the fork's `oauthAllowedHosts` declaration for
+ * the Glean auth provider, so the two cannot drift apart.
+ */
+export const GLEAN_REGISTRABLE_DOMAIN = "glean.com";
+
 const COMMON_SECOND_LEVEL_PUBLIC_SUFFIX_LABELS = new Set([
   "ac",
   "co",
@@ -142,7 +150,7 @@ function createGleanBackendUrl(instance: string): string {
     );
   }
 
-  return `https://${normalized}-be.glean.com`;
+  return `https://${normalized}-be.${GLEAN_REGISTRABLE_DOMAIN}`;
 }
 
 function firstNonBlank(

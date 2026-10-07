@@ -12,7 +12,7 @@ _Avoid_: personal wiki, local wiki (code-level names for the same thing)
 The generated documentation set for a single repository, living in that repo's `openwiki/` directory.
 
 **Connector**:
-A source of evidence for the Brain Wiki. A connector pulls raw items from one system and records them with provenance; it never writes wiki pages itself.
+A source of evidence for a wiki. Most connectors serve the Brain Wiki. LangSmith serves the Code Wiki: a code-mode update pulls its traces for the agent to read. A connector pulls raw items from one system and records them with provenance; it never writes wiki pages itself.
 
 **Connector Posture**:
 The stance a connector takes toward evidence gathering: deterministic (Pull only), agentic (Exploration only), or hybrid (both). Decides whether a connector's live tools are offered to the agent during Synthesis.
@@ -29,7 +29,7 @@ The deterministic, scheduled part of ingestion: a connector fetches a bounded wi
 _Avoid_: sync, scrape
 
 **Run Ledger**:
-The human-readable per-run record every run (ingest, backfill, explore) writes into the Brain Wiki's source notes: items pulled per stream and slice, every Content Expansion outcome with failure reasons, every Escalation with the downstream tool used, and the current Backfill watermark. Machine-generated at /sources/<connector>-run-ledger.md; never edited by the synthesis agent.
+The human-readable per-run record every run (ingest, backfill, explore) writes into the Brain Wiki's source notes: items pulled per stream and slice, every Content Expansion outcome with failure reasons, every Escalation with the downstream tool used, and the current Backfill watermark. Machine-generated at /sources/<connector>-run-ledger.md; never edited by the synthesis agent. The page is a Concept Page: it opens with its own front matter (type "Run Ledger", a title, and a fixed description), so the wiki-wide front matter migration leaves a page the Run Ledger wrote unchanged.
 
 **Backfill**:
 A deliberately triggered Pull that walks a connector's history back until the source runs dry, in date slices. Its watermark is a completeness receipt: an interrupted Backfill resumes where it stopped; a finished one records how far back the evidence provably reaches. Distinct from the standing window a scheduled Pull re-fetches.
@@ -62,3 +62,7 @@ The generated listing of the Concept Pages within one wiki directory. Machine-ma
 
 **Open Question**:
 An uncertainty recorded in the Brain Wiki that future evidence or exploration is expected to resolve. The set of active open questions doubles as the exploration queue.
+
+**Allowed OAuth Hosts**:
+The registrable domain (or domains) a Connector's auth provider declares as the only place its OAuth endpoints may live, matched exactly or by subdomain suffix. It constrains endpoints the provider _discovers_ from a resource server's metadata, so a tenant URL derived from user input cannot redirect a token request off the vendor's domain. A provider that discovers endpoints and declares none is refused rather than left unconstrained (`docs/adr/0005-glean-oauth-endpoints-are-confined-to-gleans-registrable-domain.md`).
+_Avoid_: allowlist (bare — ambiguous with the tool and downstream-tool allowlists)

@@ -1,6 +1,7 @@
 import { chmod, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { restrictDirToCurrentUser } from "./windows-acl.js";
 
 /*
  * `let`, not `const`, and that is deliberate. Upstream exports these paths as
@@ -84,6 +85,7 @@ export function getConnectorLogsDir(connectorId: string): string {
 export async function ensureOpenWikiHome(): Promise<void> {
   await mkdir(openWikiHomeDir, { recursive: true, mode: 0o700 });
   await chmodIfExists(openWikiHomeDir, 0o700);
+  await restrictDirToCurrentUser(openWikiHomeDir);
   await mkdir(openWikiConnectorsDir, { recursive: true, mode: 0o700 });
   await mkdir(openWikiLocalWikiDir, { recursive: true, mode: 0o700 });
   await mkdir(openWikiSkillsDir, { recursive: true, mode: 0o700 });

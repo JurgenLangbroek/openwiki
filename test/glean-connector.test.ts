@@ -59,6 +59,97 @@ function createEmptyGleanTransport() {
   };
 }
 
+/**
+ * Stubs `fetch` for a reachable Glean tenant: the MCP endpoints answer a
+ * one-tool catalog and the REST evidence endpoints answer empty streams, so a
+ * test only has to describe the request it wants to go wrong. Returns a live
+ * count of attempts per request pathname — attempts, not calls, so a retry
+ * anywhere beneath the connector shows up.
+ */
+function stubGleanTenantFetch(
+  overrides: {
+    mcp?: (input: { init?: RequestInit; pathname: string }) => Response | null;
+    rest?: Record<string, (init?: RequestInit) => Response | Promise<Response>>;
+  } = {},
+): Map<string, number> {
+  const attempts = new Map<string, number>();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const { pathname } = new URL(
+        input instanceof Request ? input.url : input.toString(),
+      );
+      attempts.set(pathname, (attempts.get(pathname) ?? 0) + 1);
+
+      const restOverride = overrides.rest?.[pathname];
+      if (restOverride) {
+        return await restOverride(init);
+      }
+
+      switch (pathname) {
+        case "/rest/api/v1/feed":
+          return Response.json({ items: [] });
+        case "/rest/api/v1/getdocuments":
+          return Response.json({ documents: {} });
+        case "/rest/api/v1/people":
+        case "/rest/api/v1/search":
+          return Response.json({ results: [] });
+        default:
+          break;
+      }
+
+      const mcpOverride = overrides.mcp?.({ init, pathname });
+      if (mcpOverride) {
+        return mcpOverride;
+      }
+
+      const request = JSON.parse(
+        typeof init?.body === "string" ? init.body : "{}",
+      ) as { id?: number; method?: string };
+      if (request.id === undefined) {
+        return new Response(null, { status: 202 });
+      }
+
+      return Response.json({
+        id: request.id,
+        jsonrpc: "2.0",
+        result:
+          request.method === "tools/list"
+            ? { tools: [{ name: "search" }] }
+            : {},
+      });
+    }),
+  );
+
+  return attempts;
+}
+
+/**
+ * A stubbed reply that honors the request's `AbortSignal` the way a real
+ * `fetch` does — rejecting with the abort reason when it fires — so a test can
+ * tell a timeout that was applied from one that was not. Without
+ * `answerAfterMs` it never answers at all, which is the shape of an
+ * unresponsive tenant; the body it eventually answers with is feed-shaped.
+ */
+function replyHonoringAbort(
+  init: RequestInit | undefined,
+  answerAfterMs?: number,
+): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const answerTimer =
+      answerAfterMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            resolve(Response.json({ items: [] }));
+          }, answerAfterMs);
+    init?.signal?.addEventListener("abort", () => {
+      clearTimeout(answerTimer);
+      const reason: unknown = init.signal?.reason;
+      reject(reason instanceof Error ? reason : new Error(String(reason)));
+    });
+  });
+}
+
 function parseJsonObject(text: string): Record<string, unknown> {
   const value = JSON.parse(text) as unknown;
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -77,6 +168,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) {
@@ -1122,7 +1214,10 @@ describe("Glean connector", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -1132,11 +1227,11 @@ describe("Glean connector", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           tokenRefreshes += 1;
           return Promise.resolve(
             Response.json({
@@ -1204,7 +1299,10 @@ describe("Glean connector", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -1214,11 +1312,11 @@ describe("Glean connector", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           tokenRefreshes += 1;
           return Promise.resolve(
             Response.json({
@@ -1253,6 +1351,197 @@ describe("Glean connector", () => {
       "Bearer expired-access-token",
       "Bearer refreshed-access-token",
     ]);
+  });
+
+  test("attempts a rate-limited request six times in total — the rate gate's maxRetries of 5 plus the initial attempt — because no second retry layer sits beneath the gate", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // The gate's retry delay is `max(Retry-After, random * ceiling)`. Pinning
+    // the jitter to zero makes the six attempts instant; it cannot change how
+    // many of them there are, which is what this test counts.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const attempts = stubGleanTenantFetch({
+      rest: { "/rest/api/v1/feed": () => new Response(null, { status: 429 }) },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(attempts.get("/rest/api/v1/feed")).toBe(6);
+    // The other three streams answered, so the run still lands, and the
+    // rate-limit outcome reaches the Run Ledger instead of being retried away
+    // underneath the gate.
+    expect(result.status).toBe("success");
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/Glean feed pull failed:.*429/u),
+    );
+    const feedPullEvent = result.ledgerEvents?.find(
+      (event) => event.type === "pull" && event.stream === "feed",
+    );
+    expect(feedPullEvent).toMatchObject({
+      counts: { deduplicated: 0, fetched: 0, new: 0 },
+      stream: "feed",
+      type: "pull",
+    });
+    expect(
+      feedPullEvent?.type === "pull" ? feedPullEvent.error : undefined,
+    ).toMatch(/429/u);
+  });
+
+  test("still paces the interval between a rate-limited request's attempts", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 100 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // With the retry backoff pinned to zero, pacing is the only thing left
+    // that can space the attempts out: an inner retry layer would have slept
+    // inside the gate's pacing slot instead.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    // The gate's clock is a virtual one that moves only when the gate sleeps,
+    // so the test reads no real clock and a loaded machine cannot skew a gap.
+    // A fresh module graph gives the connector its own gate: the shared gate of
+    // the statically imported connector keeps real-clock state across tests.
+    let virtualTime = 1_000;
+    const gateSleeps: number[] = [];
+    vi.resetModules();
+    vi.doMock("../src/connectors/rate-gate.ts", async (importOriginal) => {
+      const original =
+        await importOriginal<typeof import("../src/connectors/rate-gate.ts")>();
+      return {
+        ...original,
+        createRateGate: (
+          options: Parameters<typeof original.createRateGate>[0],
+        ) =>
+          original.createRateGate({
+            ...options,
+            now: () => virtualTime,
+            sleep: (durationMs: number) => {
+              gateSleeps.push(durationMs);
+              virtualTime += durationMs;
+              return Promise.resolve();
+            },
+          }),
+      };
+    });
+    const feedAttemptTimes: number[] = [];
+    stubGleanTenantFetch({
+      rest: {
+        "/rest/api/v1/feed": () => {
+          feedAttemptTimes.push(virtualTime);
+          return new Response(null, { status: 429 });
+        },
+      },
+    });
+
+    try {
+      const { createGleanConnector: createPacedGleanConnector } =
+        await import("../src/connectors/sources/glean.ts");
+      await createPacedGleanConnector().ingest();
+    } finally {
+      vi.doUnmock("../src/connectors/rate-gate.ts");
+      vi.resetModules();
+    }
+
+    expect(feedAttemptTimes).toHaveLength(6);
+    const intervals = feedAttemptTimes
+      .slice(1)
+      .map((time, index) => time - feedAttemptTimes[index]);
+    // 100 requests per second is a 10ms interval. Another stream's request may
+    // take a slot between two feed attempts, so a gap can span several
+    // intervals, but never fewer than one. An unpaced retry loop makes it 0.
+    expect(intervals).toHaveLength(5);
+    for (const interval of intervals) {
+      expect(interval).toBeGreaterThanOrEqual(10);
+    }
+    expect(gateSleeps.length).toBeGreaterThan(0);
+  });
+
+  test("times an unresponsive tenant out instead of stalling the run", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+      requestTimeoutMs: 25,
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    stubGleanTenantFetch({
+      rest: {
+        "/rest/api/v1/feed": (init) => replyHonoringAbort(init),
+        "/rest/api/v1/people": (init) => replyHonoringAbort(init),
+        "/rest/api/v1/search": (init) => replyHonoringAbort(init),
+      },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("error");
+    expect(result.warnings).toContainEqual(
+      expect.stringMatching(/Glean feed pull failed:.*timeout/iu),
+    );
+  });
+
+  test("lets the Capability Probe, which the gate does not wrap, retry a transient failure through upstream's helper", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    // Pins the helper's backoff jitter to zero so its one retry is instant.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    // Counts attempts of one exact JSON-RPC request rather than requests to the
+    // endpoint: how many requests the MCP handshake makes is upstream's
+    // business and may change, but a retried request is always the same request
+    // sent twice.
+    const initializeAttempts: string[] = [];
+    stubGleanTenantFetch({
+      mcp: ({ init, pathname }) => {
+        const { method } = JSON.parse(
+          typeof init?.body === "string" ? init.body : "{}",
+        ) as { method?: string };
+        if (pathname !== "/mcp/default" || method !== "initialize") {
+          return null;
+        }
+        initializeAttempts.push(pathname);
+        return initializeAttempts.length === 1
+          ? new Response(null, { status: 503 })
+          : null;
+      },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    // The probe's first attempt was answered with a 503 and upstream's helper
+    // sent it again, so the tool catalog was still discovered.
+    expect(initializeAttempts).toHaveLength(2);
+    expect(result.status).toBe("success");
+    expect(result.message).toMatch(/^Probed 2 MCP tool\(s\)/u);
+  });
+
+  test("keeps an oversized configured timeout from clamping to a millisecond", async () => {
+    await writeGleanConfig({
+      enabled: true,
+      instance: "acme",
+      rateLimit: { requestsPerSecond: 1_000_000 },
+      // A user reaching for "effectively no timeout". `AbortSignal.timeout`
+      // inherits `setTimeout`'s 32-bit ceiling, so an unclamped value this
+      // size aborts after about a millisecond and fails every request.
+      requestTimeoutMs: 2_147_483_648,
+    });
+    process.env.OPENWIKI_GLEAN_ACCESS_TOKEN = "secret-access-token";
+    stubGleanTenantFetch({
+      rest: { "/rest/api/v1/feed": (init) => replyHonoringAbort(init, 25) },
+    });
+
+    const result = await createGleanConnector().ingest();
+
+    expect(result.status).toBe("success");
+    expect(result.warnings).toEqual([]);
   });
 
   test("returns an authentication hint when the tenant probe fails", async () => {
@@ -2429,7 +2718,10 @@ describe("Glean OAuth provider", () => {
         if (url.includes("oauth-protected-resource")) {
           return Promise.resolve(
             Response.json({
-              authorization_servers: ["https://auth.acme.example"],
+              // On Glean's own domain: the provider declares
+              // `oauthAllowedHosts`, so a discovered authorization server off
+              // that domain is refused rather than followed.
+              authorization_servers: ["https://auth.glean.com"],
             }),
           );
         }
@@ -2439,11 +2731,11 @@ describe("Glean OAuth provider", () => {
         ) {
           return Promise.resolve(
             Response.json({
-              token_endpoint: "https://auth.acme.example/token",
+              token_endpoint: "https://auth.glean.com/token",
             }),
           );
         }
-        if (url === "https://auth.acme.example/token") {
+        if (url === "https://auth.glean.com/token") {
           return Promise.resolve(
             Response.json({
               access_token: "new-access-token",
@@ -2467,5 +2759,118 @@ describe("Glean OAuth provider", () => {
     expect(requests.at(-1)?.body).toContain(
       "resource=https%3A%2F%2Facme-be.glean.com%2Fmcp%2Fdefault",
     );
+  });
+
+  test("resolves the backend from a work email and refreshes against an authorization server on Glean's own domain", async () => {
+    // The end-to-end path the allowed-host list must not break: a work email
+    // domain becomes an instance label, the instance becomes the backend host,
+    // the backend serves protected-resource metadata naming a separately-hosted
+    // authorization server, and that server is on Glean's domain so discovery
+    // clears the host check.
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_EMAIL = "j.doe@acme.com";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        requests.push(url);
+
+        if (url.includes("oauth-protected-resource")) {
+          return Promise.resolve(
+            Response.json({
+              authorization_servers: ["https://auth.glean.com"],
+            }),
+          );
+        }
+        if (
+          url.includes("oauth-authorization-server") ||
+          url.includes("openid-configuration")
+        ) {
+          return Promise.resolve(
+            Response.json({ token_endpoint: "https://auth.glean.com/token" }),
+          );
+        }
+        if (url === "https://auth.glean.com/token") {
+          return Promise.resolve(
+            Response.json({
+              access_token: "new-access-token",
+              expires_in: 3600,
+              token_type: "Bearer",
+            }),
+          );
+        }
+
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }),
+    );
+
+    await expect(refreshOAuthAccessToken("glean")).resolves.toBe(
+      "new-access-token",
+    );
+    expect(requests[0]).toBe(
+      "https://acme-be.glean.com/.well-known/oauth-protected-resource/mcp/default",
+    );
+    expect(requests.at(-1)).toBe("https://auth.glean.com/token");
+  });
+
+  test("refuses an authorization server the backend advertises off Glean's domain", async () => {
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_INSTANCE = "acme";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        requests.push(url);
+
+        if (url.includes("oauth-protected-resource")) {
+          return Promise.resolve(
+            Response.json({
+              authorization_servers: ["https://auth.attacker.example"],
+            }),
+          );
+        }
+
+        return Promise.resolve(
+          Response.json({
+            access_token: "attacker-issued-token",
+            token_endpoint: "https://auth.attacker.example/token",
+          }),
+        );
+      }),
+    );
+
+    await expect(refreshOAuthAccessToken("glean")).rejects.toThrow(
+      "OAuth authorization server issuer host is not allowed.",
+    );
+    // The refusal is what stops the refresh token from being posted to the
+    // attacker's host, so assert the request never happened rather than only
+    // that an error surfaced.
+    expect(
+      requests.filter((url) => url.includes("attacker.example")),
+    ).toStrictEqual([]);
+  });
+
+  test("refuses a backendBaseUrl escape hatch pointed off Glean's domain", async () => {
+    // The accepted cost of the allowed-host list. `resolveGleanBackendUrl`
+    // takes any HTTPS origin, so a Glean deployment on a custom domain resolves
+    // a backend fine and then fails the host check at OAuth time. Widening the
+    // list is the intended fix; this test exists so the failure is a documented
+    // decision rather than a surprise bug report.
+    process.env.OPENWIKI_GLEAN_BACKEND_URL = "https://glean.acme.example";
+    process.env.OPENWIKI_GLEAN_CLIENT_ID = "registered-client";
+    process.env.OPENWIKI_GLEAN_REFRESH_TOKEN = "refresh-token";
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshOAuthAccessToken("glean")).rejects.toThrow(
+      "MCP protected resource URL host is not allowed.",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

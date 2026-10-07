@@ -1,42 +1,21 @@
-import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { ensureOpenWikiHome, openWikiSkillsDir } from "../openwiki-home.js";
+---
+name: write-connector
+description: Add a new built-in OpenWiki source connector. Use when a user asks to create or implement an OpenWiki connector.
+---
 
-export function getWriteConnectorSkillPath(): string {
-  return path.join(openWikiSkillsDir, "write-connector.md");
-}
-
-export async function ensureWriteConnectorSkill(): Promise<void> {
-  await ensureOpenWikiHome();
-  const skillPath = getWriteConnectorSkillPath();
-
-  try {
-    await readFile(skillPath, "utf8");
-    return;
-  } catch (error) {
-    if (!isFileNotFoundError(error)) {
-      throw error;
-    }
-  }
-
-  await writeFile(skillPath, `${WRITE_CONNECTOR_SKILL.trim()}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-}
-
-const WRITE_CONNECTOR_SKILL = `
 # Write An OpenWiki Connector
-
-Use this skill when a user asks to add a new OpenWiki source connector.
 
 OpenWiki connectors are built-in TypeScript modules in the OSS repository. Do not create a plugin marketplace, dynamic connector package, or runtime-loaded untrusted connector. Add normal source files and tests.
 
 ## Required Shape
 
 - Add the connector to src/connectors/types.ts and src/connectors/registry.ts.
+- Add the connector id to CONNECTOR_IDS in src/connectors/registry.ts. The typecheck fails until you do (EveryConnectorIdIsListed).
+- Add a case for the connector id to createConnectorSynthesisGuidance in src/ingestion.ts. The switch is exhaustive, so the typecheck fails until you do.
+- The compiler does not check the next two. Add the connector id to isKnownConnectorId in src/onboarding.ts, or onboarding silently drops it. Add an entry to SOURCE_OPTIONS in src/credentials.tsx, or the setup wizard never offers it.
 - Implement the connector under src/connectors/sources/<connector>.ts.
-- The connector must expose a ConnectorRuntime with id, displayName, description, backend, supportsAgenticDiscovery, requiredEnv, and ingest().
+- The connector must expose a ConnectorRuntime with id, displayName, description, backend, mode, supportsAgenticDiscovery, requiredEnv, and ingest().
+- Set mode to "code" only for a connector that pulls runtime evidence about the repository being documented. It runs in every code-mode update (langsmith is the example). Set mode to "personal" for a source that feeds the personal wiki, such as git-repo.
 - Declare the connector's posture in the table in src/connectors/posture.ts; the registry stamps it onto the runtime. The table is exhaustive, so a new connector id does not compile until its posture is declared.
 - Posture is the live axis: it decides deterministic pull versus agentic exploration. supportsAgenticDiscovery is a required field nothing here reads; set it, but never wire a decision to it.
 - Ingestion writes raw JSON/manifests under ~/.openwiki/connectors/<id>/raw/<run-id>/.
@@ -68,14 +47,5 @@ When done, tell the user:
 - which connector files changed,
 - which env vars to set in ~/.openwiki/.env,
 - what config file to create or edit,
-- how to run openwiki --update to trigger ingestion,
+- how to run openwiki personal --update to trigger ingestion,
 - which scopes/permissions the source provider requires.
-`;
-
-function isFileNotFoundError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
-  );
-}

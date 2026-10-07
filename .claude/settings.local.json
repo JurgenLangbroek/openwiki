@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "open-knowledge"
+  ],
+  "enableAllProjectMcpServers": true
+}

@@ -19,7 +19,10 @@ import {
   OPENWIKI_X_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_X_REFRESH_TOKEN_ENV_KEY,
 } from "../constants.js";
-import { resolveGleanTarget } from "../connectors/sources/glean-backend.js";
+import {
+  GLEAN_REGISTRABLE_DOMAIN,
+  resolveGleanTarget,
+} from "../connectors/sources/glean-backend.js";
 import type { AuthProviderId, OAuthProviderConfig } from "./types.js";
 
 export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
@@ -27,6 +30,19 @@ export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
     clientAuth: "none",
     displayName: "Glean",
     id: "glean",
+    // Glean's OAuth endpoints are all discovered from metadata served by a
+    // backend whose host is the most user-supplied one in the system: it comes
+    // from a work email domain or an instance name typed during setup, with an
+    // escape hatch (`OPENWIKI_GLEAN_BACKEND_URL`) accepting an arbitrary HTTPS
+    // origin. Declaring the registrable domain rather than a fixed hostname is
+    // what makes the list compatible with that: upstream's matcher does
+    // exact-or-suffix matching, so this admits every instance-derived backend
+    // (`acme-be.glean.com`) and any separately-hosted authorization server on
+    // the same domain, while refusing an endpoint the discovered metadata points
+    // off-domain. A Glean deployment on a custom domain has to widen this list;
+    // that cost is accepted, and pinned by a test so the failure is a decision
+    // rather than a surprise.
+    oauthAllowedHosts: [GLEAN_REGISTRABLE_DOMAIN],
     resolveMcpResourceUrl: async () => (await resolveGleanTarget()).mcpUrl,
     scopes: ["chat", "documents", "feed", "mcp", "people", "search"],
     tokenMapping: {
@@ -62,6 +78,7 @@ export const AUTH_PROVIDERS: Record<AuthProviderId, OAuthProviderConfig> = {
     displayName: "Notion MCP",
     id: "notion",
     mcpResourceUrl: "https://mcp.notion.com/mcp",
+    oauthAllowedHosts: ["notion.com"],
     scopes: [],
     tokenMapping: {
       accessTokenEnvKey: OPENWIKI_NOTION_MCP_ACCESS_TOKEN_ENV_KEY,
@@ -122,12 +139,78 @@ export function getAuthProvider(
   return AUTH_PROVIDERS[providerId];
 }
 
+/**
+ * The MCP OAuth resource URL for a provider, or `undefined` when the provider
+ * has no MCP resource at all (Gmail, Slack and X authenticate against static
+ * endpoints — absence is not an error).
+ *
+ * Most providers declare `mcpResourceUrl` statically. Glean cannot: its
+ * backend is derived at runtime from a work email or instance name, so it
+ * supplies `resolveMcpResourceUrl` instead. Callers must resolve through here
+ * *before* handing the URL to `oauth-discovery.js`, so the dynamic value is
+ * what gets validated.
+ *
+ * This is also where upstream's `if (!provider.mcpResourceUrl) throw` guard
+ * lives on this fork. Upstream places it inside `registerMcpOAuthClient` and
+ * `discoverMcpTokenEndpoint`, where it can only read the static field — for
+ * Glean that field is legitimately absent, so the guard there would reject a
+ * working provider. Asserting non-empty at this seam keeps the guarantee
+ * ("anything that reaches discovery has a real resource URL") while letting the
+ * dynamic resolution through, and reports a resource-URL-specific failure
+ * instead of falling through to "<provider> OAuth provider is incomplete."
+ *
+ * The guard covers *both* branches: a blank static `mcpResourceUrl` is as
+ * unusable as a blank dynamic resolution, and would otherwise be truthy at the
+ * call sites and die inside `new URL()` with a bare `TypeError: Invalid URL`.
+ * The returned URL is trimmed, because it is not only parsed — it is also sent
+ * verbatim as the OAuth `resource` parameter in the token request body and the
+ * authorization URL, where padding would go on the wire.
+ *
+ * This seam also refuses to resolve for a provider that discovers its endpoints
+ * from metadata but declares no `oauthAllowedHosts`. Upstream's field is
+ * optional and its matcher skips the check when the list is absent *or empty*,
+ * so such a provider silently follows whatever host the resource server's
+ * metadata names — and `refreshOAuthAccessToken` then posts the refresh token
+ * there. Every discovering provider passes through here before any discovery
+ * happens, which makes this the one place the requirement can be enforced
+ * fail-closed without altering upstream's type. The check runs *before*
+ * resolution: a missing declaration is a defect in the provider table, not a
+ * user misconfiguration, so it must not depend on the user's environment or on
+ * whether resolution happens to reach the network first.
+ */
 export async function resolveOAuthMcpResourceUrl(
   provider: OAuthProviderConfig,
 ): Promise<string | undefined> {
-  return provider.resolveMcpResourceUrl
+  if (
+    provider.mcpResourceUrl === undefined &&
+    provider.resolveMcpResourceUrl === undefined
+  ) {
+    return undefined;
+  }
+
+  if (!provider.oauthAllowedHosts?.length) {
+    throw new Error(
+      `${provider.displayName} discovers OAuth endpoints from metadata, so it must declare oauthAllowedHosts.`,
+    );
+  }
+
+  const resolved = provider.resolveMcpResourceUrl
     ? await provider.resolveMcpResourceUrl()
     : provider.mcpResourceUrl;
+
+  if (resolved === undefined) {
+    return undefined;
+  }
+
+  const resourceUrl = resolved.trim();
+
+  if (!resourceUrl) {
+    throw new Error(
+      `${provider.displayName} did not resolve an MCP OAuth resource URL.`,
+    );
+  }
+
+  return resourceUrl;
 }
 
 export function isAuthProviderId(value: string): value is AuthProviderId {

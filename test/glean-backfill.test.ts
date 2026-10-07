@@ -478,6 +478,99 @@ describe("Glean Backfill", () => {
     expect(fetchExpansion).toHaveBeenCalledTimes(1);
   });
 
+  test("carries a rate-limited Content Expansion to the Run Ledger and the tripwire after the rate gate's six attempts", async () => {
+    // The gate's retry delay is `max(Retry-After, random * ceiling)`; pinning
+    // the jitter to zero keeps the six attempts instant without changing how
+    // many there are.
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    let expansionAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        const { pathname } = new URL(
+          input instanceof Request ? input.url : input.toString(),
+        );
+        const body = JSON.parse(
+          typeof init?.body === "string" ? init.body : "{}",
+        ) as {
+          documentSpecs?: unknown[];
+          id?: number;
+          method?: string;
+          query?: string;
+        };
+
+        if (pathname === "/rest/api/v1/getdocuments") {
+          // An empty spec list is the auth preflight, which must succeed for
+          // the walk to start; a populated one is a Content Expansion read,
+          // and that is what the tenant rate-limits here.
+          if (body.documentSpecs?.length === 0) {
+            return Promise.resolve(Response.json({ documents: {} }));
+          }
+          expansionAttempts += 1;
+          return Promise.resolve(new Response(null, { status: 429 }));
+        }
+        if (pathname === "/rest/api/v1/search") {
+          return Promise.resolve(
+            Response.json(
+              body.query?.startsWith('owner:"me"')
+                ? {
+                    results: [
+                      {
+                        document: {
+                          datasource: "drive",
+                          id: "rate-limited-item",
+                          title: "Document rate-limited-item",
+                          url: "https://app.glean.com/go/rate-limited-item",
+                        },
+                      },
+                    ],
+                  }
+                : { results: [] },
+            ),
+          );
+        }
+        if (pathname === "/rest/api/v1/feed") {
+          return Promise.resolve(Response.json({ items: [] }));
+        }
+        if (pathname === "/rest/api/v1/people") {
+          return Promise.resolve(Response.json({ results: [] }));
+        }
+        if (body.id === undefined) {
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        return Promise.resolve(
+          Response.json({
+            id: body.id,
+            jsonrpc: "2.0",
+            result: body.method === "tools/list" ? { tools: [] } : {},
+          }),
+        );
+      }),
+    );
+
+    const result = await createGleanConnector().backfill?.({
+      connectorConfig: {
+        expansion: { totalFailureSliceLimit: 1 },
+        rateLimit: { requestsPerSecond: 1_000_000 },
+      },
+    });
+
+    // One candidate, six attempts: the rate gate's maxRetries of 5 plus the
+    // initial attempt, and nothing multiplying them underneath.
+    expect(expansionAttempts).toBe(6);
+    expect(result).toMatchObject({ status: "error" });
+    expect(result?.message).toMatch(/tripwire.*429/isu);
+    expect(
+      result?.ledgerEvents?.some(
+        (event) =>
+          event.type === "expansion" &&
+          event.id === "rate-limited-item" &&
+          event.outcome === "failed" &&
+          /429/u.test(event.reason ?? ""),
+      ),
+    ).toBe(true);
+  });
+
   test("does not count a slice with a deduplicated candidate as total failure", async () => {
     await writeFile(
       path.join(openWikiHome, "connectors", "glean", "state.json"),

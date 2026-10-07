@@ -86,6 +86,24 @@ describe("Rate gate", () => {
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  test("gives a rate-limited call six attempts by default: its maxRetries of 5 plus the initial attempt", async () => {
+    // The gate is the sole rate-limit retry authority for the paths it wraps,
+    // so this default *is* the attempt budget a rate-limited service sees.
+    // Nothing beneath it may retry as well, or the two budgets multiply.
+    const clock = createFakeClock();
+    const failure = Object.assign(new Error("rate limited"), { status: 429 });
+    const request = vi.fn<() => Promise<void>>().mockRejectedValue(failure);
+    const gate = createRateGate({
+      baseDelayMs: 1,
+      now: clock.now,
+      requestsPerSecond: 1_000,
+      sleep: clock.sleep,
+    });
+
+    await expect(gate.run(request)).rejects.toBe(failure);
+    expect(request).toHaveBeenCalledTimes(6);
+  });
+
   test("rethrows the last 429 when retries are exhausted", async () => {
     const clock = createFakeClock();
     const firstFailure = Object.assign(new Error("first"), { status: 429 });

@@ -197,7 +197,7 @@ Source-specific instructions:
 ${sourceConfig.ingestionGoal?.trim() || "(not provided)"}
 
 Reusable synthesis policy:
-${createSourceSynthesisPolicy(connector.id)}${liveToolsSection}${createEscalationSection(connector, "exploration")}${agenticTools}
+${createSourceSynthesisPolicy(connector)}${liveToolsSection}${createEscalationSection(connector, "exploration")}${agenticTools}
 
 Instructions:
 - Prioritize Active questions that look answerable with the available tools. Gather targeted evidence and update the relevant canonical wiki pages, including project and people pages.

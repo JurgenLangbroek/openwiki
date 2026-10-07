@@ -1,5 +1,10 @@
 import { loadOpenWikiEnv, saveOpenWikiEnv } from "../env.js";
 import {
+  discoverAuthorizationServerMetadata,
+  discoverProtectedResourceMetadata,
+  validateOAuthEndpointUrl,
+} from "./oauth-discovery.js";
+import {
   AUTH_PROVIDERS,
   getAuthProvider,
   resolveOAuthMcpResourceUrl,
@@ -23,16 +28,8 @@ type TokenResponse = {
   token_type?: string;
 };
 
-type TokenEndpointMetadata = {
-  token_endpoint?: string;
-};
-
 type TokenResponseField =
   "access_token" | "expires_in" | "refresh_token" | "token_type";
-
-type ProtectedResourceMetadata = {
-  authorization_servers?: string[];
-};
 
 const REFRESH_EXPIRY_SKEW_MS = 60_000;
 
@@ -100,14 +97,22 @@ export async function refreshOAuthAccessToken(
     body.set("resource", mcpResourceUrl);
   }
 
-  const response = await fetch(tokenUrl, {
-    body,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
+  const response = await fetch(
+    validateOAuthEndpointUrl(
+      tokenUrl,
+      `${provider.displayName} token endpoint`,
+      { allowedHosts: provider.oauthAllowedHosts },
+    ).toString(),
+    {
+      body,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      method: "POST",
+      redirect: "manual",
     },
-    method: "POST",
-  });
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -241,71 +246,52 @@ async function resolveTokenUrl(
   mcpResourceUrl: string | undefined,
 ): Promise<string> {
   if (provider.tokenUrl) {
-    return provider.tokenUrl;
+    return validateOAuthEndpointUrl(
+      provider.tokenUrl,
+      `${provider.displayName} token endpoint`,
+      { allowedHosts: provider.oauthAllowedHosts },
+    ).toString();
   }
 
+  // The resource URL is resolved before we get here — Glean derives it from a
+  // work email or instance name — and is then handed to the validating
+  // discovery below. Resolve first, then validate; the non-empty guard for that
+  // resolution lives in `resolveOAuthMcpResourceUrl`.
   if (mcpResourceUrl) {
-    return await discoverMcpTokenEndpoint(mcpResourceUrl);
+    return await discoverMcpTokenEndpoint(provider, mcpResourceUrl);
   }
 
   throw new Error(`${provider.displayName} OAuth token endpoint is unknown.`);
 }
 
-async function discoverMcpTokenEndpoint(resourceUrl: string): Promise<string> {
-  const protectedMetadata =
-    await discoverProtectedResourceMetadata(resourceUrl);
+async function discoverMcpTokenEndpoint(
+  provider: OAuthProviderConfig,
+  resourceUrl: string,
+): Promise<string> {
+  const validationOptions = { allowedHosts: provider.oauthAllowedHosts };
+  const protectedMetadata = await discoverProtectedResourceMetadata(
+    resourceUrl,
+    validationOptions,
+  );
   const authServer = protectedMetadata.authorization_servers?.[0];
 
   if (!authServer) {
     throw new Error("MCP OAuth resource did not advertise an auth server.");
   }
 
-  const tokenMetadata = await discoverAuthorizationServerMetadata(authServer);
+  const tokenMetadata = await discoverAuthorizationServerMetadata(
+    authServer,
+    validationOptions,
+  );
   if (!tokenMetadata.token_endpoint) {
     throw new Error(
       "MCP OAuth authorization server did not expose token_endpoint.",
     );
   }
 
-  return tokenMetadata.token_endpoint;
-}
-
-async function discoverProtectedResourceMetadata(
-  resourceUrl: string,
-): Promise<ProtectedResourceMetadata> {
-  const url = new URL(resourceUrl);
-  const candidates = [
-    `${url.origin}/.well-known/oauth-protected-resource${url.pathname}`,
-    `${url.origin}/.well-known/oauth-protected-resource`,
-  ];
-
-  for (const candidate of candidates) {
-    const response = await fetch(candidate);
-    if (response.ok) {
-      return (await response.json()) as ProtectedResourceMetadata;
-    }
-  }
-
-  throw new Error("Could not discover MCP protected resource metadata.");
-}
-
-async function discoverAuthorizationServerMetadata(
-  issuer: string,
-): Promise<TokenEndpointMetadata> {
-  const issuerUrl = new URL(issuer);
-  const candidates = [
-    `${issuerUrl.origin}/.well-known/oauth-authorization-server${issuerUrl.pathname}`,
-    `${issuerUrl.origin}/.well-known/openid-configuration${issuerUrl.pathname}`,
-    `${issuerUrl.origin}/.well-known/oauth-authorization-server`,
-    `${issuerUrl.origin}/.well-known/openid-configuration`,
-  ];
-
-  for (const candidate of candidates) {
-    const response = await fetch(candidate);
-    if (response.ok) {
-      return (await response.json()) as TokenEndpointMetadata;
-    }
-  }
-
-  throw new Error("Could not discover OAuth authorization server metadata.");
+  return validateOAuthEndpointUrl(
+    tokenMetadata.token_endpoint,
+    `${provider.displayName} token endpoint`,
+    validationOptions,
+  ).toString();
 }

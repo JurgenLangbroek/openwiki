@@ -1,10 +1,8 @@
 ---
 type: Integration
-title: Citations
-description: OpenWiki ships seven built-in connectors that pull external data
-  into a local raw cache under `~/.openwiki/connectors/<id>/raw/`, which the
-  documentation agent then reads and synthesizes into wiki ...
-timestamp: 2026-07-10T21:04:04.976Z
+title: OpenWiki Connectors
+description: OpenWiki's seven built-in connectors ingest data from Git repositories, Gmail, Hacker News, Notion, Slack, web search, and X into a local raw cache for wiki synthesis. This reference documents connector architecture, read-only MCP safeguards, ingestion orchestration, and source-specific behavior.
+tags: [connectors, integrations, ingestion, mcp]
 ---
 
 OpenWiki ships seven built-in connectors that pull external data into a local raw cache under `~/.openwiki/connectors/<id>/raw/`, which the documentation agent then reads and synthesizes into wiki pages (mainly for personal/local-wiki mode; `git-repo` also matters for code mode when documenting a different target repo than the one being ingested from).
@@ -22,6 +20,16 @@ All connectors share types in `src/connectors/types.ts`:
 `src/connectors/registry.ts` (`createConnectorRegistry()`) wires up all seven; `notion` is built through the generic `createMcpConnector()` factory (`src/connectors/sources/mcp.ts`) rather than a bespoke source file.
 
 Shared IO helpers live in `src/connectors/io.ts`: `writeRawJson()` writes raw dumps with `0600`/`0700` permissions under `~/.openwiki/connectors/<id>/raw/<runId>/`, and `updateStateWithRun()` maintains the state file.
+
+### Resilient HTTP (`fetchWithResilience`)
+
+`src/connectors/http.ts` exports `fetchWithResilience()`, a shared wrapper around the global `fetch` used by every direct-API connector (Gmail, Hacker News, Slack, X) and the HTTP MCP client (`mcp-client.ts`). It adds:
+
+- a per-request wall-clock timeout via `AbortSignal.timeout` (default 30 s), combined with any caller-supplied abort signal so whichever fires first wins;
+- bounded exponential backoff with full jitter (base 500 ms, cap 20 s) on retryable responses — HTTP 429 and 5xx — honoring a numeric or HTTP-date `Retry-After` header when present;
+- the same backoff on network errors (connection reset, DNS, timeout).
+
+Non-transient responses (2xx, 3xx, and 4xx including 401/403) are returned as-is after the first attempt. Auth failures must reach the caller so Gmail can trigger a token refresh; retrying them would waste attempts and risk account lockout. The helper accepts injectable `sleep` and `random` functions for deterministic testing.
 
 Agent-facing tools (`src/connectors/tools.ts`) expose this to the LLM during a run: `openwiki_list_connectors`, `openwiki_list_mcp_tools`, `openwiki_call_mcp_tool`, `openwiki_ingest_connector`, `openwiki_ingest_all_connectors`, `openwiki_list_raw_items`, `openwiki_read_raw_item`. Raw-file reads are sandboxed to stay inside each connector's `raw/` directory, and required-env status is reported as booleans only — secret values are never surfaced to the model.
 
@@ -58,25 +66,16 @@ Agent-facing tools (`src/connectors/tools.ts`) expose this to the LLM during a r
 
 `src/schedules.ts` installs source schedules as macOS user LaunchAgents (`~/Library/LaunchAgents/`) with logs under `~/.openwiki/logs/`, and backs the `openwiki cron list|pause|resume|delete` commands (see [CLI usage](/cli/usage.md)).
 
-## Design docs describing connectors that do not exist yet
-
-Two long-form guides at the repository root describe **planned, unimplemented** connectors — do not treat them as current behavior:
-
-- `LANGSMITH-CONNECTOR.md` — a proposed `langsmith` connector (direct-API pull of LangSmith run telemetry: error patterns, latency/token stats, trace URLs). No `langsmith` id exists in `src/connectors/types.ts` today.
-- `CODING-AGENTS-CONNECTOR.md` — a proposed `coding-agents` connector (parses local Claude Code/Codex session logs for episodic "why did this commit happen" context). Depends on the LangSmith guide's shared `src/connectors/limits.ts`, which also does not exist yet.
-
-If asked to implement either, follow the guide's phased checkpoints and confirm current state against `src/connectors/types.ts` first — these are detailed enough to be mistaken for documentation of shipped features.
-
 ## Things to watch when changing connector behavior
 
-- Adding a connector means: extend `ConnectorId` in `types.ts`, add a source file under `src/connectors/sources/`, register it in `registry.ts`, and add its `SOURCE_OPTIONS` entry in `src/credentials.tsx` onboarding — see `~/.openwiki/skills/write-connector.md` (written on demand by `src/connectors/write-connector-skill.ts`) for the full checklist.
+- Adding a connector means: extend `ConnectorId` in `types.ts`, add a source file under `src/connectors/sources/`, register it in `registry.ts`, and add its `SOURCE_OPTIONS` entry in `src/credentials.tsx` onboarding — see `/skills/write-connector/SKILL.md` for the full checklist.
 - Never write secret values into connector config or raw dumps — only env var names and presence booleans.
 - Keep deterministic ingestion (network calls) out of agent-controlled code; the agent only reads what ingestion already wrote to `raw/`.
 - MCP connectors must stay read-only; changes to `mcp-runtime.ts`'s tool-call policy directly affect what a hosted MCP server is allowed to do on OpenWiki's behalf.
 
 # Citations
 
-- `src/connectors/types.ts`, `src/connectors/registry.ts`, `src/connectors/io.ts`, `src/connectors/tools.ts`
+- `src/connectors/types.ts`, `src/connectors/registry.ts`, `src/connectors/io.ts`, `src/connectors/http.ts`, `src/connectors/tools.ts`
 - `src/connectors/mcp-client.ts`, `src/connectors/mcp-runtime.ts`, `src/connectors/sources/mcp.ts`
 - `src/connectors/sources/git-repo.ts`, `src/connectors/sources/gmail.ts`, `src/connectors/sources/hackernews.ts`, `src/connectors/sources/slack.ts`, `src/connectors/sources/web-search.ts`, `src/connectors/sources/x.ts`
 - `src/ingestion.ts`, `src/onboarding.ts`, `src/schedules.ts`

@@ -1,3 +1,10 @@
+// The upstream sync resolved this file to the fork's side, keeping the
+// decomposition below (`mcp-shared.ts` owns transport sanitisation,
+// `mcp-runtime-support.ts` owns value redaction and run recording) rather than
+// upstream's monolith. That is deliberate and should stay. The one upstream
+// content change the resolution would otherwise have dropped — hoisting
+// `isSecretLikeKey` into `../diagnostics.js` — was routed into the module that
+// owns the concern, so both sanitisers are defined in exactly one place each.
 import { createRunId, readConnectorState, writeRawJson } from "./io.js";
 import {
   executeMcpTool,
@@ -205,6 +212,8 @@ export async function callMcpConnectorTool(
     runId,
     "mcp-tool-result.json",
     {
+      // Arguments only — `result` below is persisted verbatim, as it is
+      // upstream. See the note on `sanitizeMcpValue`.
       args: sanitizeMcpValue(args),
       connectorId,
       endpoint,

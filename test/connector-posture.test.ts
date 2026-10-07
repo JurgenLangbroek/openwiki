@@ -12,12 +12,16 @@ describe("Connector Posture table", () => {
     );
   });
 
-  test("preserves the posture each connector had before the table existed", () => {
+  test("pins the exact posture of every connector, one row at a time", () => {
     expect(CONNECTOR_POSTURES).toEqual({
       "git-repo": "agentic",
       glean: "hybrid",
       google: "deterministic",
       hackernews: "deterministic",
+      // langsmith arrived with the upstream sync, after the table existed.
+      // Upstream declares supportsAgenticDiscovery: false / mode: "code", so
+      // deterministic is the faithful mapping (decisions.md D5/Q9).
+      langsmith: "deterministic",
       notion: "agentic",
       slack: "deterministic",
       "web-search": "deterministic",

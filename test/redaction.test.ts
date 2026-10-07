@@ -1,23 +1,136 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   getErrorMessage,
+  isAuthError,
   isOpenRouterServerError,
+  isSecretLikeKey,
   sanitizeDiagnosticText,
 } from "../src/diagnostics.ts";
-import { sanitizeOpenRouterResponseBody } from "../src/agent/index.ts";
+import {
+  formatEnvironmentDebugValue,
+  sanitizeOpenRouterResponseBody,
+} from "../src/agent/index.ts";
+import { sanitizeMcpValue } from "../src/connectors/mcp-runtime-support.ts";
+import { SECRET_KEY_PATTERN_SOURCE } from "../src/diagnostics.ts";
+
+describe("isSecretLikeKey", () => {
+  // The shared predicate must be the union of every term the three former
+  // implementations (cli.tsx, agent/index.ts, mcp-runtime.ts) matched, so a key
+  // redacted by one path is redacted by all of them.
+  test.each([
+    "apiKey",
+    "api_key",
+    "api-key",
+    "authorization",
+    "Bearer",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "password",
+    "user_id",
+    "Cookie",
+  ])("flags secret-bearing key %s (case-insensitive)", (key) => {
+    expect(isSecretLikeKey(key)).toBe(true);
+    expect(isSecretLikeKey(key.toUpperCase())).toBe(true);
+  });
+
+  test.each(["email", "plan", "model", "count", "name", "url"])(
+    "does not flag benign key %s",
+    (key) => {
+      expect(isSecretLikeKey(key)).toBe(false);
+    },
+  );
+});
+
+describe("sanitizeOpenRouterResponseBody", () => {
+  test("redacts values for the unified secret key set", () => {
+    const body = JSON.stringify({
+      access_token: "should-be-hidden",
+      user_id: "u-123",
+      cookie: "session=abc",
+      model: "gpt-5.5",
+    });
+    const sanitized = sanitizeOpenRouterResponseBody(body);
+
+    expect(sanitized).not.toContain("should-be-hidden");
+    expect(sanitized).not.toContain("u-123");
+    expect(sanitized).not.toContain("session=abc");
+    expect(sanitized).toContain("[REDACTED]");
+    // Non-secret fields are preserved.
+    expect(sanitized).toContain("gpt-5.5");
+  });
+});
+
+describe("sanitizeMcpValue", () => {
+  // The MCP tool-result redactor decides what gets written into
+  // `$OPENWIKI_HOME/connectors/<id>/raw/<run-id>/…` and the connector log. It
+  // used to carry a private, narrower copy of the secret-key pattern that was
+  // missing `bearer` and `user_id`, so those keys were persisted verbatim while
+  // the diagnostics and OpenRouter paths redacted them in the same process.
+  // These tests pin it to the shared source of truth in `src/diagnostics.ts`.
+
+  test.each(["bearer", "Bearer", "user_id", "USER_ID"])(
+    "redacts the key %s that the fork's old narrow pattern let through",
+    (key) => {
+      expect(sanitizeMcpValue({ [key]: "leaked-value" })).toEqual({
+        [key]: "<redacted>",
+      });
+    },
+  );
+
+  // Derived from the shared pattern, not hand-listed: if a term is added to
+  // `SECRET_KEY_PATTERN_SOURCE` and the MCP redactor stops tracking it — or if
+  // the narrow private copy is reintroduced here — this fails.
+  test.each(
+    SECRET_KEY_PATTERN_SOURCE.split("|").map((alternative) =>
+      alternative.replace("[-_]?", "_"),
+    ),
+  )("redacts %s, every term of the shared secret-key pattern", (key) => {
+    expect(isSecretLikeKey(key)).toBe(true);
+    expect(sanitizeMcpValue({ [key]: "leaked-value" })).toEqual({
+      [key]: "<redacted>",
+    });
+  });
+
+  test("redacts secret keys nested inside objects and arrays", () => {
+    expect(
+      sanitizeMcpValue({
+        results: [{ auth: { bearer: "leaked-value" }, title: "Q3 plan" }],
+      }),
+    ).toEqual({
+      results: [{ auth: { bearer: "<redacted>" }, title: "Q3 plan" }],
+    });
+  });
+
+  test("leaves benign keys and scalars untouched", () => {
+    const value = { count: 2, name: "inbox", url: "https://example.com" };
+
+    expect(sanitizeMcpValue(value)).toEqual(value);
+    expect(sanitizeMcpValue("plain")).toBe("plain");
+    expect(sanitizeMcpValue(null)).toBe(null);
+  });
+});
 
 describe("sanitizeDiagnosticText", () => {
+  const originalNebiusKey = process.env.NEBIUS_API_KEY;
   const originalOpenAiKey = process.env.OPENAI_API_KEY;
   const originalOpenAiCompatibleKey = process.env.OPENAI_COMPATIBLE_API_KEY;
   const originalNvidiaKey = process.env.NVIDIA_API_KEY;
 
   beforeEach(() => {
+    delete process.env.NEBIUS_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_COMPATIBLE_API_KEY;
     delete process.env.NVIDIA_API_KEY;
   });
 
   afterEach(() => {
+    if (originalNebiusKey === undefined) {
+      delete process.env.NEBIUS_API_KEY;
+    } else {
+      process.env.NEBIUS_API_KEY = originalNebiusKey;
+    }
+
     if (originalOpenAiKey === undefined) {
       delete process.env.OPENAI_API_KEY;
     } else {
@@ -45,6 +158,17 @@ describe("sanitizeDiagnosticText", () => {
 
     expect(result).not.toContain("super-secret-value-12345");
     expect(result).toContain("[REDACTED:OPENAI_API_KEY]");
+  });
+
+  test("redacts the Nebius API key when set in the environment", () => {
+    process.env.NEBIUS_API_KEY = "nebius-secret-value-12345";
+
+    const result = sanitizeDiagnosticText(
+      "request failed with key nebius-secret-value-12345 attached",
+    );
+
+    expect(result).not.toContain("nebius-secret-value-12345");
+    expect(result).toContain("[REDACTED:NEBIUS_API_KEY]");
   });
 
   test("redacts the exact value of NVIDIA_API_KEY when set", () => {
@@ -113,6 +237,66 @@ describe("sanitizeDiagnosticText", () => {
     expect(result).not.toContain("compatible-secret-key-99999");
     expect(result).toContain("[REDACTED:OPENAI_COMPATIBLE_API_KEY]");
   });
+
+  test("redacts the exact value of BEDROCK_AWS_SECRET_ACCESS_KEY set in the environment", () => {
+    const originalSecretKey = process.env.BEDROCK_AWS_SECRET_ACCESS_KEY;
+    process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = "aws-secret-key-abcdef123456";
+
+    try {
+      const result = sanitizeDiagnosticText(
+        "request failed with key aws-secret-key-abcdef123456 attached",
+      );
+
+      expect(result).not.toContain("aws-secret-key-abcdef123456");
+      expect(result).toContain("[REDACTED:BEDROCK_AWS_SECRET_ACCESS_KEY]");
+    } finally {
+      if (originalSecretKey === undefined) {
+        delete process.env.BEDROCK_AWS_SECRET_ACCESS_KEY;
+      } else {
+        process.env.BEDROCK_AWS_SECRET_ACCESS_KEY = originalSecretKey;
+      }
+    }
+  });
+
+  test.each([
+    ["AWS_ACCESS_KEY_ID", "standard-access-id-123"],
+    ["AWS_SECRET_ACCESS_KEY", "standard-aws-secret-abcdef123456"],
+    ["AWS_SESSION_TOKEN", "standard-aws-session-token-abcdef123456"],
+    ["BEDROCK_AWS_SESSION_TOKEN", "bedrock-session-token-abcdef123456"],
+    ["AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/aws/identity-token"],
+  ])("redacts the exact value of %s", (envKey, secretValue) => {
+    const originalValue = process.env[envKey];
+    process.env[envKey] = secretValue;
+
+    try {
+      const result = sanitizeDiagnosticText(
+        `provider error exposed ${secretValue}`,
+      );
+
+      expect(result).not.toContain(secretValue);
+      expect(result).toContain(`[REDACTED:${envKey}]`);
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env[envKey];
+      } else {
+        process.env[envKey] = originalValue;
+      }
+    }
+  });
+});
+
+describe("formatEnvironmentDebugValue", () => {
+  test.each([
+    ["BEDROCK_AWS_ACCESS_KEY_ID", "bedrock-access-id-123"],
+    ["BEDROCK_AWS_SECRET_ACCESS_KEY", "bedrock-secret-abcdef123456"],
+    ["BEDROCK_AWS_SESSION_TOKEN", "bedrock-session-abcdef123456"],
+  ])("does not preview %s", (envKey, secretValue) => {
+    const result = formatEnvironmentDebugValue(envKey, secretValue);
+
+    expect(result).toBe(`set(length=${secretValue.length})`);
+    expect(result).not.toContain(secretValue.slice(0, 6));
+    expect(result).not.toContain(secretValue.slice(-4));
+  });
 });
 
 describe("isOpenRouterServerError", () => {
@@ -159,6 +343,41 @@ describe("getErrorMessage", () => {
   test("redacts secrets in the underlying error message", () => {
     expect(getErrorMessage(new Error("bad token sk-abcDEF123"))).toContain(
       "[REDACTED:API_KEY]",
+    );
+  });
+});
+
+describe("isAuthError", () => {
+  test("recognizes AWS SDK credential-chain exhaustion by error name", () => {
+    const error = Object.assign(
+      new Error("Could not load credentials from any providers"),
+      { name: "CredentialsProviderError" },
+    );
+
+    expect(isAuthError(error, error.message)).toBe(true);
+  });
+
+  test.each([
+    "Could not load credentials from any providers",
+    "The web identity token that was passed is expired or is not valid",
+    "The security token included in the request is invalid",
+  ])("recognizes AWS credential failure: %s", (message) => {
+    expect(isAuthError(new Error(message), message)).toBe(true);
+  });
+
+  test.each([
+    "InvalidIdentityTokenException",
+    "ExpiredTokenException",
+    "IDPRejectedClaimException",
+  ])("recognizes AWS identity error name %s", (name) => {
+    const error = Object.assign(new Error("AWS identity failed"), { name });
+
+    expect(isAuthError(error, error.message)).toBe(true);
+  });
+
+  test("does not classify unrelated provider failures as authentication errors", () => {
+    expect(isAuthError(new Error("model overloaded"), "model overloaded")).toBe(
+      false,
     );
   });
 });
