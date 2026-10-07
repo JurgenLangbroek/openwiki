@@ -354,9 +354,9 @@ function createFrontMatter(connectorId: string): string {
 
 /**
  * Splits a page into its verbatim front-matter block and the body after it.
- * The block is `usable` when it names a non-empty `type`. That is the test the
- * page-format migration applies, so the ledger and the migration agree on which
- * pages are already conformant.
+ * The block is `usable` when it names a non-empty `type` and the page-format
+ * migration did not derive it. The migration leaves any block with a `type`
+ * alone, so a usable block keeps the migration a no-op.
  */
 function splitExistingPage(existingPage: string | null): {
   body: string | null;
@@ -371,12 +371,22 @@ function splitExistingPage(existingPage: string | null): {
     return { body: existingPage };
   }
 
-  const type = parseFrontmatterFields(existingPage)?.type;
+  const fields = parseFrontmatterFields(existingPage);
+  const type = fields?.type;
+  // The page-format migration stamps `type`, `title` and the generated marker
+  // and never a description. The ledger replaces such a block with its authored
+  // one. Otherwise a ledger that the migration reaches first keeps the stamp
+  // for ever. A block with a description is the ledger's own, or someone
+  // enriched it, so it stays.
+  const description = fields?.description;
+  const stamped =
+    fields?.[OPENWIKI_GENERATED_FIELD] === true &&
+    !(typeof description === "string" && description.trim() !== "");
   return {
     body: body.replace(/^\s+/u, ""),
     frontMatter: {
       text: existingPage.slice(0, existingPage.length - body.length),
-      usable: typeof type === "string" && type.trim() !== "",
+      usable: typeof type === "string" && type.trim() !== "" && !stamped,
     },
   };
 }

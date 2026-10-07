@@ -619,6 +619,46 @@ describe("Run Ledger front matter", () => {
     expect(next).toContain("## Run run-1 ");
   });
 
+  test("a block with a CRLF front matter is kept byte for byte", () => {
+    const first = upsertRunLedgerSection(null, ledger());
+    const crlf = frontMatterOf(first).replaceAll("\n", "\r\n");
+    const page = `${crlf}${splitFrontmatter(first).body}`;
+    expect(validateOkfFrontmatter(page)).toEqual({ valid: true });
+
+    const next = upsertRunLedgerSection(page, ledger({ runId: "run-2" }));
+
+    expect(frontMatterOf(next)).toBe(crlf);
+    expect(next).toContain("## Run run-1 ");
+    expect(next).toContain("## Run run-2 ");
+  });
+
+  test("the block the page-format migration derives is replaced by the authored one", () => {
+    const first = upsertRunLedgerSection(null, ledger());
+    const stamped = `---\ntype: "Reference"\ntitle: "Glean Run Ledger"\n${OPENWIKI_GENERATED_FIELD}: true\n---\n\n${splitFrontmatter(first).body.replace(/^\n/u, "")}`;
+
+    const next = upsertRunLedgerSection(stamped, ledger({ runId: "run-2" }));
+
+    expect(frontMatterOf(next)).toBe(frontMatterOf(first));
+    expect(next).toContain("## Run run-1 ");
+    expect(next).toContain("## Run run-2 ");
+  });
+
+  test("a block that carries a description is kept even with the generated marker", () => {
+    const first = upsertRunLedgerSection(null, ledger());
+    const edited = first.replace(
+      /^description: .*$/mu,
+      'description: "Edited by hand."',
+    );
+    expect(parseFrontmatterFields(edited)).toMatchObject({
+      description: "Edited by hand.",
+      [OPENWIKI_GENERATED_FIELD]: true,
+    });
+
+    expect(
+      frontMatterOf(upsertRunLedgerSection(edited, ledger({ runId: "run-2" }))),
+    ).toBe(frontMatterOf(edited));
+  });
+
   test("front matter without a usable type is replaced on a ledger page", () => {
     const first = upsertRunLedgerSection(null, ledger());
     const broken = `---\ntitle: "Mine"\n---\n${splitFrontmatter(first).body}`;

@@ -141,6 +141,82 @@ describe("a written Run Ledger as a Concept Page", () => {
     expect(await readFile(filePath, "utf8")).toBe(migrated);
   });
 
+  async function writeLegacyLedger(
+    connectorId: string,
+    runIds: string[],
+  ): Promise<string> {
+    let filePath = "";
+    for (const runId of runIds) {
+      filePath = await writeRunLedger({ ...ledger(runId), connectorId });
+    }
+    const modern = await readFile(filePath, "utf8");
+    await writeFile(
+      filePath,
+      splitFrontmatter(modern).body.replace(/^\n/u, ""),
+    );
+    return filePath;
+  }
+
+  test("a legacy page the migration stamped first still ends on the authored block", async () => {
+    const filePath = await writeLegacyLedger("glean", ["run-1", "run-2"]);
+
+    await migrateWikiToOkf(wikiBackend(), "local-wiki");
+    const stamped = await readFile(filePath, "utf8");
+    expect(parseFrontmatterFields(stamped)).toMatchObject({
+      type: "Reference",
+      [OPENWIKI_GENERATED_FIELD]: true,
+    });
+
+    await writeRunLedger(ledger("run-3"));
+    const page = await readFile(filePath, "utf8");
+
+    expect(validateOkfFrontmatter(page)).toEqual({ valid: true });
+    expect(parseFrontmatterFields(page)).toMatchObject({
+      description: createRunLedgerDescription("glean"),
+      title: "Glean Run Ledger",
+      type: "Run Ledger",
+    });
+    for (const runId of ["run-1", "run-2", "run-3"]) {
+      expect(page).toContain(`## Run ${runId} `);
+    }
+    await migrateWikiToOkf(wikiBackend(), "local-wiki");
+    expect(await readFile(filePath, "utf8")).toBe(page);
+  });
+
+  test("two legacy ledgers end authored when the migration runs between their writes", async () => {
+    const gleanPath = await writeLegacyLedger("glean", ["run-1", "run-2"]);
+    const slackPath = await writeLegacyLedger("slack", ["run-1", "run-2"]);
+
+    // Ingestion order: ledger 1, then the agent run (migration sweeps the whole
+    // wiki), then ledger 2.
+    await writeRunLedger(ledger("run-3"));
+    await migrateWikiToOkf(wikiBackend(), "local-wiki");
+    await writeRunLedger({ ...ledger("run-3"), connectorId: "slack" });
+    await synchronizeWikiIndexes(wikiBackend(), "local-wiki");
+
+    const index = await readFile(
+      path.join(path.dirname(gleanPath), "index.md"),
+      "utf8",
+    );
+    for (const [filePath, connector, name] of [
+      [gleanPath, "glean", "Glean"],
+      [slackPath, "slack", "Slack"],
+    ] as const) {
+      const page = await readFile(filePath, "utf8");
+      expect(validateOkfFrontmatter(page)).toEqual({ valid: true });
+      expect(parseFrontmatterFields(page)).toMatchObject({
+        description: createRunLedgerDescription(connector),
+        type: "Run Ledger",
+      });
+      for (const runId of ["run-1", "run-2", "run-3"]) {
+        expect(page).toContain(`## Run ${runId} `);
+      }
+      expect(index).toContain(
+        `- [${name} Run Ledger](${connector}-run-ledger.md) - ${createRunLedgerDescription(connector)}`,
+      );
+    }
+  });
+
   test("the directory's Wiki Index lists it with its authored description", async () => {
     const filePath = await writeRunLedger(ledger("run-1"));
     const before = await readFile(filePath, "utf8");
