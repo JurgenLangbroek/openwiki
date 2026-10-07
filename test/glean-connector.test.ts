@@ -1402,26 +1402,63 @@ describe("Glean connector", () => {
     // that can space the attempts out: an inner retry layer would have slept
     // inside the gate's pacing slot instead.
     vi.spyOn(Math, "random").mockReturnValue(0);
+    // The gate's clock is a virtual one that moves only when the gate sleeps,
+    // so the test reads no real clock and a loaded machine cannot skew a gap.
+    // A fresh module graph gives the connector its own gate: the shared gate of
+    // the statically imported connector keeps real-clock state across tests.
+    let virtualTime = 1_000;
+    const gateSleeps: number[] = [];
+    vi.resetModules();
+    vi.doMock("../src/connectors/rate-gate.ts", async (importOriginal) => {
+      const original =
+        await importOriginal<typeof import("../src/connectors/rate-gate.ts")>();
+      return {
+        ...original,
+        createRateGate: (
+          options: Parameters<typeof original.createRateGate>[0],
+        ) =>
+          original.createRateGate({
+            ...options,
+            now: () => virtualTime,
+            sleep: (durationMs: number) => {
+              gateSleeps.push(durationMs);
+              virtualTime += durationMs;
+              return Promise.resolve();
+            },
+          }),
+      };
+    });
     const feedAttemptTimes: number[] = [];
     stubGleanTenantFetch({
       rest: {
         "/rest/api/v1/feed": () => {
-          feedAttemptTimes.push(performance.now());
+          feedAttemptTimes.push(virtualTime);
           return new Response(null, { status: 429 });
         },
       },
     });
 
-    await createGleanConnector().ingest();
+    try {
+      const { createGleanConnector: createPacedGleanConnector } =
+        await import("../src/connectors/sources/glean.ts");
+      await createPacedGleanConnector().ingest();
+    } finally {
+      vi.doUnmock("../src/connectors/rate-gate.ts");
+      vi.resetModules();
+    }
 
     expect(feedAttemptTimes).toHaveLength(6);
     const intervals = feedAttemptTimes
       .slice(1)
       .map((time, index) => time - feedAttemptTimes[index]);
-    // 100 requests per second is a 10ms interval; assert well below it so a
-    // slow machine cannot fail the test, but far enough above zero that an
-    // unpaced retry loop does.
-    expect(intervals.filter((interval) => interval >= 5)).toHaveLength(5);
+    // 100 requests per second is a 10ms interval. Another stream's request may
+    // take a slot between two feed attempts, so a gap can span several
+    // intervals, but never fewer than one. An unpaced retry loop makes it 0.
+    expect(intervals).toHaveLength(5);
+    for (const interval of intervals) {
+      expect(interval).toBeGreaterThanOrEqual(10);
+    }
+    expect(gateSleeps.length).toBeGreaterThan(0);
   });
 
   test("times an unresponsive tenant out instead of stalling the run", async () => {
