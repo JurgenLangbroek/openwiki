@@ -1,6 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import { rm } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 // Mock the two external boundaries so nothing hits the network and CI detection
@@ -33,7 +31,7 @@ import {
   noticeSuppressed,
 } from "../src/telemetry/gates.ts";
 import { getOrCreateInstallId } from "../src/telemetry/install-id.ts";
-import { buildRunEvent, recordRun } from "../src/telemetry/senders.ts";
+import { buildRunEvent } from "../src/telemetry/senders.ts";
 import type { RunEventContext } from "../src/telemetry/senders.ts";
 import type { RunTelemetry } from "../src/telemetry/types.ts";
 import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
@@ -101,10 +99,6 @@ function runDetails(overrides: Partial<RunTelemetry> = {}): RunTelemetry {
     configuredConnectors: [],
     ...overrides,
   };
-}
-
-async function readTee(file: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
 }
 
 describe("classifyError", () => {
@@ -228,28 +222,6 @@ describe("client.capture", () => {
   });
 });
 
-describe("senders.recordRun", () => {
-  test("opt-out sends nothing and tees a disabled marker", async () => {
-    process.env.OPENWIKI_TELEMETRY_DISABLED = "1";
-    const file = path.join(tmpdir(), "ow-tel-optout.json");
-
-    await recordRun(runDetails({ telemetryFile: file }));
-
-    const tee = await readTee(file);
-    expect(tee).toMatchObject({ disabled: true, sent: false });
-    expect(posthog.captureImmediate).not.toHaveBeenCalled();
-    await rm(file, { force: true });
-  });
-
-  test("never throws even if capture fails", async () => {
-    posthog.captureImmediate.mockImplementation(() => {
-      throw new Error("boom");
-    });
-
-    await expect(recordRun(runDetails())).resolves.toBeUndefined();
-  });
-});
-
 describe("getConfiguredConnectorIds", () => {
   test("reports only auth-gated, fully-configured connectors", () => {
     expect(getConfiguredConnectorIds()).not.toContain("notion");
@@ -277,6 +249,12 @@ describe("getConfiguredConnectorIds", () => {
  * describe what the send path would send, so an upstream change to the payload
  * still breaks a test here, while nothing here can be misread as evidence that
  * telemetry fires. That it does not fire is test/telemetry-disabled.test.ts.
+ *
+ * The `recordRun` wiring around the builder (identity choice, tee shape, never
+ * throws) cannot be reached with the real gate closed. test/telemetry-send-path.test.ts
+ * covers it, and says plainly that it models upstream's open gate. The
+ * `distinctId` and `ci` assertions below only echo the context the test passes
+ * in. The identity choice that feeds them is asserted there, not here.
  */
 describe("the run event the send path would send", () => {
   function context(overrides: Partial<RunEventContext> = {}): RunEventContext {
