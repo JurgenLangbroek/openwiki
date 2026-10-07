@@ -1,7 +1,22 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { RunLedger } from "../src/connectors/run-ledger.ts";
+import { OpenWikiLocalShellBackend } from "../src/agent/docs-only-backend.ts";
+import {
+  createRunLedgerDescription,
+  type RunLedger,
+} from "../src/connectors/run-ledger.ts";
+import {
+  OPENWIKI_GENERATED_FIELD,
+  parseFrontmatterFields,
+  splitFrontmatter,
+  validateOkfFrontmatter,
+} from "../src/okf/frontmatter.ts";
+import {
+  migrateWikiToOkf,
+  synchronizeWikiIndexes,
+} from "../src/okf/index-sync.ts";
+import { openWikiLocalWikiDir } from "../src/openwiki-home.ts";
 import {
   buildRunLedgerFromResult,
   createRunLedgerEscalationRecorder,
@@ -56,6 +71,105 @@ describe("writeRunLedger", () => {
     expect(page.indexOf("## Run run-2")).toBeLessThan(
       page.indexOf("## Run run-1"),
     );
+  });
+});
+
+describe("a written Run Ledger as a Concept Page", () => {
+  function wikiBackend(): OpenWikiLocalShellBackend {
+    return new OpenWikiLocalShellBackend({
+      docsOnly: true,
+      outputMode: "local-wiki",
+      rootDir: openWikiLocalWikiDir,
+      virtualMode: true,
+    });
+  }
+
+  test("passes upstream's front-matter validator after every write", async () => {
+    const filePath = await writeRunLedger(ledger("run-1"));
+    expect(validateOkfFrontmatter(await readFile(filePath, "utf8"))).toEqual({
+      valid: true,
+    });
+
+    await writeRunLedger(ledger("run-2"));
+    expect(validateOkfFrontmatter(await readFile(filePath, "utf8"))).toEqual({
+      valid: true,
+    });
+  });
+
+  test("keeps its front matter byte-identical across written runs", async () => {
+    const filePath = await writeRunLedger(ledger("run-1"));
+    const first = await readFile(filePath, "utf8");
+    const frontMatter = first.slice(
+      0,
+      first.length - splitFrontmatter(first).body.length,
+    );
+
+    for (const runId of ["run-2", "run-3", "run-1"]) {
+      await writeRunLedger(ledger(runId));
+      expect((await readFile(filePath, "utf8")).startsWith(frontMatter)).toBe(
+        true,
+      );
+    }
+    expect(frontMatter).toContain(`${OPENWIKI_GENERATED_FIELD}: true`);
+  });
+
+  test("the page-format migration changes nothing", async () => {
+    await writeRunLedger(ledger("run-1"));
+    const filePath = await writeRunLedger(ledger("run-2"));
+    const before = await readFile(filePath, "utf8");
+
+    await migrateWikiToOkf(wikiBackend(), "local-wiki");
+
+    expect(await readFile(filePath, "utf8")).toBe(before);
+  });
+
+  test("a page from an older run without front matter gains it once", async () => {
+    const filePath = await writeRunLedger(ledger("run-1"));
+    const modern = await readFile(filePath, "utf8");
+    await writeFile(
+      filePath,
+      splitFrontmatter(modern).body.replace(/^\n/u, ""),
+    );
+
+    await writeRunLedger(ledger("run-2"));
+    const migrated = await readFile(filePath, "utf8");
+    await migrateWikiToOkf(wikiBackend(), "local-wiki");
+
+    expect(validateOkfFrontmatter(migrated)).toEqual({ valid: true });
+    expect(migrated).toContain("## Run run-1 ");
+    expect(migrated).toContain("## Run run-2 ");
+    expect(await readFile(filePath, "utf8")).toBe(migrated);
+  });
+
+  test("the directory's Wiki Index lists it with its authored description", async () => {
+    const filePath = await writeRunLedger(ledger("run-1"));
+    const before = await readFile(filePath, "utf8");
+
+    await synchronizeWikiIndexes(wikiBackend(), "local-wiki");
+
+    const index = await readFile(
+      path.join(path.dirname(filePath), "index.md"),
+      "utf8",
+    );
+    const description = createRunLedgerDescription("glean");
+    expect(parseFrontmatterFields(before)?.description).toBe(description);
+    expect(index).toContain(
+      `- [Glean Run Ledger](glean-run-ledger.md) - ${description}`,
+    );
+    expect(await readFile(filePath, "utf8")).toBe(before);
+  });
+
+  test("a foreign page at the ledger path stays beside the new ledger", async () => {
+    const filePath = getRunLedgerPath("glean");
+    await mkdir(path.dirname(filePath), { recursive: true });
+    const foreign = "# Notes\n\nOwner text.\n";
+    await writeFile(filePath, foreign);
+
+    await writeRunLedger(ledger("run-1"));
+    const page = await readFile(filePath, "utf8");
+
+    expect(validateOkfFrontmatter(page)).toEqual({ valid: true });
+    expect(page.endsWith(foreign)).toBe(true);
   });
 });
 
