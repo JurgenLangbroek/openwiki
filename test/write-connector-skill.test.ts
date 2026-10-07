@@ -3,7 +3,6 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { syncBundledSkills } from "../src/agent/skills.ts";
-import type { ConnectorDefinition } from "../src/connectors/types.ts";
 import { openWikiSkillsDir } from "../src/openwiki-home.ts";
 import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
 
@@ -11,24 +10,46 @@ import { useTempOpenWikiHome } from "./support/temp-openwiki-home.ts";
  * Fork-owned pins for the bundled write-connector skill.
  *
  * `skills/write-connector/SKILL.md` is upstream's file, so an upstream sync can
- * rewrite it. The fork edits it in two places (the posture guidance). Without a
- * pin, a later sync could silently replace that guidance with upstream's text,
- * which says nothing about the posture table.
+ * rewrite it. The fork edits it in four places: the posture-table bullet, the
+ * "posture is the live axis" bullet, the `mode` field and bullet, and the
+ * wiring bullets (CONNECTOR_IDS and friends). Without a pin, a later sync could
+ * silently replace that guidance with upstream's text, which says nothing about
+ * the posture table.
  */
 
 const SKILL_PATH = path.join(process.cwd(), "skills/write-connector/SKILL.md");
 
-// Typed against the real definition: if a field leaves or enters
-// `ConnectorDefinition`, `tsc` over this file fails until the list follows.
-const DEFINITION_FIELDS = {
-  backend: true,
-  description: true,
-  displayName: true,
-  id: true,
-  mode: true,
-  requiredEnv: true,
-  supportsAgenticDiscovery: true,
-} satisfies Record<keyof ConnectorDefinition, true>;
+/**
+ * The required keys of `ConnectorDefinition`, read from the real source.
+ *
+ * A type-level guard (`satisfies Record<keyof ConnectorDefinition, true>`) would
+ * be cleaner, but `pnpm typecheck` skips `test/`, so it would never run. This
+ * parses the `export type ConnectorDefinition = { ... }` block as text. The limit:
+ * it assumes one `key: type;` per line at two-space indent, which is how prettier
+ * formats the block. A restructured block fails the sanity checks below with a
+ * message that names the cause.
+ */
+async function readRequiredDefinitionKeys(): Promise<string[]> {
+  const source = await readFile(
+    path.join(process.cwd(), "src/connectors/types.ts"),
+    "utf8",
+  );
+  const block = /export type ConnectorDefinition = \{\n([\s\S]*?)\n\};/.exec(
+    source,
+  );
+  expect(
+    block,
+    "could not find `export type ConnectorDefinition = {` in src/connectors/types.ts; update readRequiredDefinitionKeys",
+  ).not.toBeNull();
+  const keys = [...(block?.[1] ?? "").matchAll(/^ {2}(\w+)(\??):/gm)]
+    .filter((match) => match[2] !== "?")
+    .map((match) => match[1]);
+  expect(
+    keys,
+    "parsed no required keys from ConnectorDefinition; update readRequiredDefinitionKeys",
+  ).toContain("id");
+  return keys;
+}
 
 describe("write-connector skill file", () => {
   test("ships with the front matter the skill loader keys on", async () => {
@@ -44,14 +65,31 @@ describe("write-connector skill file", () => {
       .split("\n")
       .find((line) => line.includes("must expose a ConnectorRuntime"));
 
-    expect(shapeLine).toBeDefined();
-    const named = (shapeLine ?? "")
-      .split(" with ")[1]
-      .replace(/\.$/, "")
-      .split(/,\s*(?:and\s+)?/);
+    expect(shapeLine, "the field-list bullet is missing").toBeDefined();
+    const parts = (shapeLine ?? "").split(" with ");
+    expect(
+      parts.length,
+      'the field-list bullet no longer reads "... with a, b, and c."',
+    ).toBeGreaterThan(1);
+    const named = parts[1].replace(/\.$/, "").split(/,\s*(?:and\s+)?/);
     expect([...named].sort()).toEqual(
-      [...Object.keys(DEFINITION_FIELDS), "ingest()"].sort(),
+      [...(await readRequiredDefinitionKeys()), "ingest()"].sort(),
     );
+  });
+
+  test("explains how to pick mode and where to register a new connector id", async () => {
+    const skill = await readFile(SKILL_PATH, "utf8");
+
+    expect(skill).toContain('Set mode to "code" only for');
+    expect(skill).toContain('Set mode to "personal" for');
+    for (const wiring of [
+      "CONNECTOR_IDS in src/connectors/registry.ts",
+      "createConnectorSynthesisGuidance in src/ingestion.ts",
+      "isKnownConnectorId in src/onboarding.ts",
+      "SOURCE_OPTIONS in src/credentials.tsx",
+    ]) {
+      expect(skill).toContain(wiring);
+    }
   });
 
   test("tells the author to declare posture in the fork-owned table, not on the definition", async () => {
@@ -84,6 +122,17 @@ describe("write-connector skill file", () => {
 });
 
 describe("syncBundledSkills", () => {
+  test("the agent run calls it before building the agent", async () => {
+    // Source-text pin: the agent factory is too heavy to run here, and no other
+    // test notices if this call disappears and the skill stops installing.
+    const source = await readFile(
+      path.join(process.cwd(), "src/agent/index.ts"),
+      "utf8",
+    );
+
+    expect(source).toMatch(/^\s*await syncBundledSkills\(\);$/m);
+  });
+
   let home: string;
 
   beforeEach(async () => {
